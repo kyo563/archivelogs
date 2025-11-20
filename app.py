@@ -303,8 +303,8 @@ st.markdown(
 
 st.write("---")
 
-channel_input = st.text_input("チャンネルID または チャンネルURL（直近50件を取得）", "")
-video_input = st.text_input("動画URL または 動画ID（単体取得・任意）", "")
+channel_input = st.text_input("チャンネルID または チャンネルURL", "")
+video_input = st.text_input("動画URL またはID", "")
 
 ws = None
 if st.button("ログを取得してスプレッドシートに追記"):
