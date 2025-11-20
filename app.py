@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
 # ===== ページ設定 =====
-st.set_page_config(page_title="YouTube 投稿ログ収集ツール", layout="centered")
+st.set_page_config(page_title="ログ収集ツール", layout="centered")
 
 # ===== 共通設定（JST & 日付フォーマット） =====
 JST = timezone(timedelta(hours=9))
