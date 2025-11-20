@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
 # ===== ページ設定 =====
-st.set_page_config(page_title="YouTube 投稿ログ収集ツール", layout="centered")
+st.set_page_config(page_title="ログ収集", layout="centered")
 
 # ===== 共通設定（JST & 日付フォーマット） =====
 JST = timezone(timedelta(hours=9))
@@ -243,7 +243,7 @@ def fetch_recent_rows_for_channel(
     channel_input: str,
     api_key: str,
     logged_at_str: str,
-    limit: int = 5,
+    limit: int = 50,  # ★ デフォルト 50 件に変更
 ) -> List[List]:
     youtube = get_youtube_client(api_key)
     channel_id = resolve_channel_id_simple(channel_input, api_key)
@@ -252,13 +252,13 @@ def fetch_recent_rows_for_channel(
         return []
 
     try:
-        # 日付の新しい順に最大20件取得して、その中から条件を満たすものを最大 limit 件
+        # 日付の新しい順に最大50件取得して、その中から条件を満たすものを最大 limit 件
         resp = youtube.search().list(
             part="id,snippet",
             channelId=channel_id,
             type="video",
             order="date",
-            maxResults=20,
+            maxResults=50,  # ★ 20 → 50 に拡大
         ).execute()
     except HttpError as e:
         st.error(f"YouTube API エラー（search.list）: {e}")
@@ -297,7 +297,7 @@ st.title("YouTube 投稿ログ収集ツール")
 
 st.markdown(
     """
-- チャンネル単位：**直近5件の公開済み動画/アーカイブ**を取得してスプレッドシートに追記します  
+- チャンネル単位：**直近50件の公開済み動画/アーカイブ**を取得してスプレッドシートに追記します  
 - 動画単体：任意の動画URL/IDを指定して1件だけ追記します  
 - A列・D列には **JST (日本時間)** の日時（`yyyy/mm/dd hh:mm:ss`）が記録されます
 """
@@ -305,7 +305,7 @@ st.markdown(
 
 st.write("---")
 
-channel_input = st.text_input("チャンネルID または チャンネルURL（直近5件を取得）", "")
+channel_input = st.text_input("チャンネルID または チャンネルURL（直近50件を取得）", "")
 video_input = st.text_input("動画URL または 動画ID（単体取得・任意）", "")
 
 ws = None
@@ -336,10 +336,10 @@ if st.button("ログを取得してスプレッドシートに追記"):
             st.stop()
         rows_to_append.append(row)
 
-    # 2) そうでなければチャンネル入力から直近5件
+    # 2) そうでなければチャンネル入力から直近50件
     elif channel_input.strip():
         rows_to_append = fetch_recent_rows_for_channel(
-            channel_input.strip(), API_KEY, logged_at_str, limit=5
+            channel_input.strip(), API_KEY, logged_at_str, limit=50  # ★ 5 → 50
         )
         if not rows_to_append:
             st.warning("条件に合致する公開済み動画が見つかりませんでした。")
