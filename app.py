@@ -1,3 +1,8 @@
+"""YouTube チャンネルの統計を収集する Streamlit アプリ。
+
+このファイルは純粋な Python コードのみで構成し、誤ってパッチヘッダーや
+シェルコマンドの断片が混入しないように保守する。"""
+
 import streamlit as st
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
@@ -253,6 +258,9 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
     公開日時の古い順に max_results 件まで取得。
     """
     youtube = get_youtube_client(api_key)
+    # API の仕様上 1 回で取得できる件数は 50 件のため、上限を固定する
+    # （複数ページにまたがっても最終的な取得件数はこの上限に収まる）
+    max_results = min(max_results, 50)
 
     # uploads プレイリストID取得
     try:
@@ -263,6 +271,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
         ).execute()
         items = ch_resp.get("items", [])
         if not items:
+            st.warning("チャンネルのアップロード情報が取得できませんでした。")
             return []
         uploads_playlist_id = (
             items[0]
@@ -271,26 +280,39 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
             .get("uploads")
         )
         if not uploads_playlist_id:
+            st.warning("アップロード動画のプレイリストが見つかりませんでした。")
             return []
-    except Exception:
+    except Exception as e:
+        st.warning(f"チャンネル情報の取得に失敗しました: {e}")
         return []
 
     # playlistItems で videoId を取得
+    video_ids: List[str] = []
+    next_page: Optional[str] = None
     try:
-        pl_resp = youtube.playlistItems().list(
-            part="contentDetails",
-            playlistId=uploads_playlist_id,
-            maxResults=max_results,
-        ).execute()
-    except Exception:
+        # max_results は 50 に制限するが、アップロード数が多いチャンネルでも
+        # 先頭 50 件を漏らさないよう、ページングしながら上限に達するまで集める
+        while True:
+            remaining = max_results - len(video_ids)
+            if remaining <= 0:
+                break
+            pl_resp = youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=uploads_playlist_id,
+                maxResults=min(50, remaining),
+                pageToken=next_page,
+            ).execute()
+            for it in pl_resp.get("items", []):
+                cd = it.get("contentDetails", {}) or {}
+                vid = cd.get("videoId")
+                if vid:
+                    video_ids.append(vid)
+            next_page = pl_resp.get("nextPageToken")
+            if not next_page:
+                break
+    except Exception as e:
+        st.warning(f"アップロード動画の取得に失敗しました: {e}")
         return []
-
-    video_ids = []
-    for it in pl_resp.get("items", []):
-        cd = it.get("contentDetails", {}) or {}
-        vid = cd.get("videoId")
-        if vid:
-            video_ids.append(vid)
 
     if not video_ids:
         return []
@@ -302,7 +324,8 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
             id=",".join(video_ids),
             maxResults=max_results,
         ).execute()
-    except Exception:
+    except Exception as e:
+        st.warning(f"動画情報の取得に失敗しました: {e}")
         return []
 
     filtered: List[Dict] = []
@@ -327,7 +350,8 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
         filtered,
         key=lambda x: (x.get("snippet", {}).get("publishedAt") or ""),
     )
-    return filtered_sorted
+    # ページングで集めた件数が 50 件に満たない場合もあるため、安全側にスライス
+    return filtered_sorted[:max_results]
 
 
 def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
@@ -341,7 +365,8 @@ def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
             id=video_id,
             maxResults=1,
         ).execute()
-    except Exception:
+    except Exception as e:
+        st.warning(f"動画情報の取得に失敗しました: {e}")
         return None
 
     items = resp.get("items", [])
@@ -503,6 +528,7 @@ def search_video_ids_published_after(
                 publishedAfter=published_after,
                 type="video",
                 maxResults=50,
+                order="date",  # 期間内の取りこぼしを避けるため公開日の降順で取得
                 pageToken=next_page,
             ).execute()
             for item in resp.get("items", []):
@@ -512,8 +538,8 @@ def search_video_ids_published_after(
             next_page = resp.get("nextPageToken")
             if not next_page:
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        st.warning(f"期間内動画の検索に失敗しました: {e}")
 
     return video_ids
 
@@ -544,7 +570,8 @@ def get_videos_stats(video_ids: Tuple[str, ...], api_key: str) -> Dict[str, Dict
                     "viewCount": int(stats.get("viewCount", 0) or 0),
                     "likeCount": int(stats.get("likeCount", 0) or 0),
                 }
-        except Exception:
+        except Exception as e:
+            st.warning(f"動画統計情報の取得に失敗しました: {e}")
             continue
 
     return out
