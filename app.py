@@ -628,7 +628,7 @@ with tab_logs:
 # タブ2: チャンネルステータス（Status）
 # ----------------------------
 with tab_status:
-    st.subheader("Status シートにチャンネル全体のスナップショットを追記")
+    st.subheader("Statusシート")
 
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
