@@ -974,3 +974,12 @@ with tab_status:
                         st.write(f"登録者数: {subs}")
                         st.write(f"動画本数: {vids_total}")
                         st.write(f"総再生回数: {views_total}")
+
+                        preview = dict(zip(STATUS_HEADER, status_row))
+                        st.markdown("#### 取得結果の全項目プレビュー")
+                        st.table(
+                            [
+                                {"項目": key, "値": preview.get(key, "")}
+                                for key in STATUS_HEADER
+                            ]
+                        )
