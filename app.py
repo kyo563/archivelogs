@@ -559,13 +559,13 @@ st.title("YouTube ログ収集ツール")
 # ★ APIキー入力はここで一度だけ
 api_key = get_api_key_from_ui()
 
-tab_logs, tab_status = st.tabs(["動画ログ収集（record）", "チャンネルステータス（Status）"])
+tab_logs, tab_status = st.tabs(["ログ（record）", "ステータス（Status）"])
 
 # ----------------------------
 # タブ1: 動画ログ収集（record）
 # ----------------------------
 with tab_logs:
-    st.subheader("record シートに動画ログを追記")
+    st.subheader("recordシート")
 
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
