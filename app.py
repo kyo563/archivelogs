@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 # 共通設定
 # ====================================
 
-st.set_page_config(page_title="YouTube ログ収集ツール", layout="wide")
+st.set_page_config(page_title="ログ収集ツール", layout="wide")
 
 # タイムゾーン（日本時間固定）
 JST = timezone(timedelta(hours=9))
@@ -24,29 +24,28 @@ RECORD_SHEET_NAME = st.secrets.get("WORKSHEET_NAME", "record")
 STATUS_SHEET_NAME = "Status"
 
 if SPREADSHEET_ID is None:
-    st.error('st.secrets["SPREADSHEET_ID"] が設定されていません。')
-    st.stop()
+    raise RuntimeError('st.secrets["SPREADSHEET_ID"] が設定されていません。')
 
 # record シートのヘッダー
 RECORD_HEADER = [
-    "logged_at",
-    "type",
-    "title",
-    "published_at",
-    "duration_sec",
-    "view_count",
-    "like_count",
+    "logged_at",       # 取得日時（JST, yyyy/mm/dd hh:mm:ss）
+    "type",            # video / live / short
+    "title",           # HYPERLINK付きタイトル
+    "published_at",    # 公開日時（JST, yyyy/mm/dd hh:mm:ss）
+    "duration_sec",    # 秒数
+    "view_count",      # 再生数
+    "like_count",      # 高評価数
 ]
 
-# Status シートのヘッダー
+# Status シートのヘッダー（日本語）
 STATUS_HEADER = [
-    "取得日時",                  # logged_at
+    "取得日時",                  # logged_at（JST, yyyy/mm/dd）
     "チャンネルID",              # channel_id
     "チャンネル名",              # channel_title
     "登録者数",                  # subscriber_count
     "動画本数",                  # video_count
     "総再生回数",                # view_count
-    "チャンネル開設日",          # channel_published_at
+    "チャンネル開設日",          # channel_published_at（JST, yyyy/mm/dd）
     "活動月数",                  # months_active
     "累計登録者数/活動月",       # subs_per_month
     "累計登録者数/動画",         # subs_per_video
@@ -78,15 +77,20 @@ STATUS_HEADER = [
 ]
 
 
+def get_api_key_from_ui() -> Optional[str]:
+    """
+    secrets に YOUTUBE_API_KEY があればそれを使い、
+    無ければサイドバーで手入力してもらう。
+    """
+    key = st.secrets.get("YOUTUBE_API_KEY", None)
+    if not key:
+        key = st.sidebar.text_input("YouTube API Key (一時入力可)", type="password")
+    return key
+
+
 # ====================================
 # YouTube / Sheets クライアント
 # ====================================
-
-# YouTube API キー
-API_KEY = st.secrets.get("YOUTUBE_API_KEY", None)
-if not API_KEY:
-    API_KEY = st.sidebar.text_input("YouTube API Key (一時入力可)", type="password")
-
 
 @st.cache_resource
 def get_youtube_client(api_key: str):
@@ -137,18 +141,18 @@ def get_status_worksheet():
 
 
 def append_rows(ws, rows: List[List]):
-    """gspread の append_rows がない場合も考慮してラップ"""
     if not rows:
         return
     try:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
     except AttributeError:
+        # 古い gspread 互換
         for r in rows:
             ws.append_row(r, value_input_option="USER_ENTERED")
 
 
 # ====================================
-# 各種ユーティリティ
+# 共通ユーティリティ
 # ====================================
 
 def parse_iso8601_duration(duration: str) -> int:
@@ -176,17 +180,16 @@ def parse_iso8601_duration(duration: str) -> int:
 def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
     """
     URL / ID / 表示名 からチャンネルID(UC〜)を推定して返す。
-    - 既に UC〜24桁 → それを返す
-    - URLに channel/UC〜 が含まれていれば抜き出す
-    - それ以外は search().list(type=channel) で検索し、最初のチャンネルIDを返す
     """
     s = (url_or_id or "").strip()
     if not s:
         return None
 
+    # 生のチャンネルID（UC〜で始まる24桁）
     if s.startswith("UC") and len(s) == 24:
         return s
 
+    # https://www.youtube.com/channel/UC... 形式
     if "channel/" in s:
         return s.split("channel/")[1].split("/")[0]
 
@@ -208,7 +211,11 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
 
 def resolve_video_id(url_or_id: str) -> Optional[str]:
     """
-    YouTube URL / 動画ID から videoId を抽出
+    URL or ID から videoId を抜き出す。
+    - https://www.youtube.com/watch?v=...
+    - https://youtu.be/...
+    - https://www.youtube.com/shorts/...
+    - 11桁のID など
     """
     s = (url_or_id or "").strip()
     if not s:
@@ -225,15 +232,15 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
         except Exception:
             pass
 
-    # youtu.be短縮
+    # youtu.be
     if "youtu.be/" in s:
         return s.split("youtu.be/")[1].split("?")[0].split("/")[0]
 
-    # shorts URL
+    # shorts
     if "youtube.com/shorts/" in s:
         return s.split("shorts/")[1].split("?")[0].split("/")[0]
 
-    # 素の動画IDっぽいもの
+    # 素の videoId
     if len(s) == 11 and "/" not in s and " " not in s:
         return s
 
@@ -241,13 +248,13 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
 
 
 # ====================================
-# record シート向け：動画取得
+# record 用 YouTube処理
 # ====================================
 
 def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) -> List[Dict]:
     """
-    チャンネルの uploads プレイリストから最新 max_results 件の video item を取得
-    （非公開、未処理、ライブ前のものは除外）
+    チャンネルのアップロード済み動画（公開・処理済・アーカイブ済みのみ）を
+    新しい順に max_results 件まで取得。
     """
     youtube = get_youtube_client(api_key)
 
@@ -272,7 +279,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
     except Exception:
         return []
 
-    # uploads プレイリストから videoId を取得
+    # playlistItems で videoId を取得
     try:
         pl_resp = youtube.playlistItems().list(
             part="contentDetails",
@@ -292,7 +299,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
     if not video_ids:
         return []
 
-    # 動画詳細
+    # video 本体
     try:
         v_resp = youtube.videos().list(
             part="snippet,contentDetails,statistics,status,liveStreamingDetails",
@@ -307,19 +314,19 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
         snippet = it.get("snippet", {}) or {}
         status = it.get("status", {}) or {}
 
-        # 公開済み・public のみ
+        # 公開済み・処理済みのみ
         if status.get("privacyStatus") != "public":
             continue
         if status.get("uploadStatus") != "processed":
             continue
 
-        # まだライブ前 / 実況中を除外
+        # ライブ中 / 予約中は除外（アーカイブになってから）
         if snippet.get("liveBroadcastContent") in ("live", "upcoming"):
             continue
 
         filtered.append(it)
 
-    # 投稿日時の昇順（古い順）に並べ替え
+    # 公開日時（昇順）でソート
     filtered_sorted = sorted(
         filtered,
         key=lambda x: (x.get("snippet", {}).get("publishedAt") or ""),
@@ -328,6 +335,9 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
 
 
 def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
+    """
+    指定 videoId の動画を1件取得（公開・処理済み・アーカイブのみ）。
+    """
     youtube = get_youtube_client(api_key)
     try:
         resp = youtube.videos().list(
@@ -357,12 +367,16 @@ def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
 
 
 def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
+    """
+    video API の item から record シート1行分を構成。
+    """
     snippet = item.get("snippet", {}) or {}
     content = item.get("contentDetails", {}) or {}
     stats = item.get("statistics", {}) or {}
     live_details = item.get("liveStreamingDetails", {}) or {}
     video_id = item.get("id")
 
+    # 長さ
     duration_iso = content.get("duration", "PT0S")
     duration_sec = parse_iso8601_duration(duration_iso)
 
@@ -373,7 +387,7 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
     elif duration_sec <= 61:
         vtype = "short"
 
-    # 投稿日（JST）
+    # 公開日時（JST）
     published_raw = snippet.get("publishedAt")
     if published_raw:
         try:
@@ -390,9 +404,9 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
     view_count = int(stats.get("viewCount", 0) or 0)
     like_count = int(stats.get("likeCount", 0) or 0)
 
-    # タイトル＋ハイパーリンク（Sheets の HYPERLINK 関数）
+    # タイトル（改行潰し）＋HYPERLINK
     title_raw = (snippet.get("title") or "").replace("\n", " ").strip()
-    title_escaped = title_raw.replace('"', '""')  # ダブルクオート二重化
+    title_escaped = title_raw.replace('"', '""')
     url = f"https://www.youtube.com/watch?v={video_id}"
     title_cell = f'=HYPERLINK("{url}","{title_escaped}")'
 
@@ -408,7 +422,7 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
 
 
 # ====================================
-# Status シート向け：チャンネル統計
+# Status 用 YouTube処理
 # ====================================
 
 def get_channel_basic(channel_id: str, api_key: str) -> Optional[Dict]:
@@ -485,7 +499,6 @@ def search_video_ids_published_after(
     ).isoformat().replace("+00:00", "Z")
 
     next_page: Optional[str] = None
-
     try:
         while True:
             resp = youtube.search().list(
@@ -547,52 +560,42 @@ def get_videos_stats(video_ids: Tuple[str, ...], api_key: str) -> Dict[str, Dict
 
 st.title("YouTube ログ収集ツール")
 
-if not API_KEY:
-    st.warning("左サイドバーから YouTube API Key を入力してください。")
-
 tab_logs, tab_status = st.tabs(["動画ログ収集（record）", "チャンネルステータス（Status）"])
 
-# ---------------------------
-# タブ1：動画ログ収集（record）
-# ---------------------------
+# ----------------------------
+# タブ1: 動画ログ収集（record）
+# ----------------------------
 with tab_logs:
-    st.subheader("動画ログ収集（record シート）")
+    st.subheader("record シートに動画ログを追記")
 
-    col_in1, col_in2 = st.columns(2)
-    with col_in1:
-        channel_input = st.text_input(
-            "チャンネルID / URL（最新50件を record に追記）",
-            key="channel_input",
-        )
-    with col_in2:
-        video_input = st.text_input(
-            "動画ID / URL（単体動画を record に追記）",
-            key="video_input",
-        )
+    api_key = get_api_key_from_ui()
+    if not api_key:
+        st.info("サイドバーから YouTube API Key を入力してください。")
+    else:
+        channel_input = st.text_input("チャンネルURL / ID（直近50件を取得）", "")
+        video_input = st.text_input("動画URL / ID（任意・1件だけ取得）", "")
 
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        fetch_channel_btn = st.button("チャンネルから最新50件を record へ追記")
-    with col_btn2:
-        fetch_video_btn = st.button("動画1本を record へ追記")
+        col1, col2 = st.columns(2)
+        with col1:
+            run_recent_btn = st.button("直近50件を record に追記")
+        with col2:
+            run_single_btn = st.button("この動画だけ record に追記")
 
-    # --- チャンネルから最新50件 ---
-    if fetch_channel_btn:
-        if not API_KEY:
-            st.error("APIキー未設定です。サイドバーまたは secrets に設定してください。")
-        else:
-            channel_id = resolve_channel_id_simple(channel_input, API_KEY)
-            if not channel_id:
-                st.error("チャンネルIDを解決できませんでした。URL / ID / 表示名を確認してください。")
+        ws_record = get_record_worksheet()
+
+        # 直近50件（チャンネル）
+        if run_recent_btn:
+            if not channel_input.strip():
+                st.error("チャンネルURL / ID を入力してください。")
             else:
-                try:
-                    ws_record = get_record_worksheet()
-                except Exception as e:
-                    st.error(f"record シートの取得に失敗しました: {e}")
+                channel_id = resolve_channel_id_simple(channel_input, api_key)
+                if not channel_id:
+                    st.error("チャンネルIDを解決できませんでした。")
                 else:
-                    items = fetch_channel_upload_items(channel_id, max_results=50, api_key=API_KEY)
+                    with st.spinner("直近50件を取得中..."):
+                        items = fetch_channel_upload_items(channel_id, max_results=50, api_key=api_key)
                     if not items:
-                        st.warning("取得対象となる公開済み動画が見つかりませんでした。")
+                        st.warning("取得できる動画がありませんでした。")
                     else:
                         now_jst = datetime.now(JST)
                         logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
@@ -601,250 +604,259 @@ with tab_logs:
                             for it in items
                         ]
                         append_rows(ws_record, rows)
-                        st.success(f"{len(rows)} 件の動画を record シートに追記しました。")
+                        st.success(f"{len(rows)}件の動画ログを record シートに追記しました。")
 
-    # --- 単体動画 ---
-    if fetch_video_btn:
-        if not API_KEY:
-            st.error("APIキー未設定です。サイドバーまたは secrets に設定してください。")
-        else:
-            vid = resolve_video_id(video_input)
-            if not vid:
-                st.error("動画ID / URL を解釈できませんでした。")
+        # 単一動画
+        if run_single_btn:
+            if not video_input.strip():
+                st.error("動画URL / ID を入力してください。")
             else:
-                try:
-                    ws_record = get_record_worksheet()
-                except Exception as e:
-                    st.error(f"record シートの取得に失敗しました: {e}")
+                vid = resolve_video_id(video_input)
+                if not vid:
+                    st.error("動画IDを解決できませんでした。URL / ID を確認してください。")
                 else:
-                    item = fetch_single_video_item(vid, API_KEY)
+                    with st.spinner("動画情報を取得中..."):
+                        item = fetch_single_video_item(vid, api_key)
                     if not item:
-                        st.warning("対象の公開済み動画が見つかりませんでした（非公開 / 未処理 / ライブ前など）。")
+                        st.error("指定した動画が取得できませんでした（非公開・処理中・ライブ中などの可能性）。")
                     else:
                         now_jst = datetime.now(JST)
                         logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                         row = build_record_row_from_video_item(item, logged_at_str)
-                        ws_record.append_row(row, value_input_option="USER_ENTERED")
-                        st.success("1件の動画を record シートに追記しました。")
+                        append_rows(ws_record, [row])
+                        st.success("1件の動画ログを record シートに追記しました。")
 
-# ---------------------------
-# タブ2：チャンネルステータス（Status）
-# ---------------------------
+# ----------------------------
+# タブ2: チャンネルステータス（Status）
+# ----------------------------
 with tab_status:
-    st.subheader("チャンネルステータス記録（Status シート）")
+    st.subheader("Status シートにチャンネル全体のスナップショットを追記")
 
-    status_input = st.text_input(
-        "チャンネルID / URL（Status にスナップショットを1行追加）",
-        key="status_input",
-    )
-    status_btn = st.button("Status シートに最新スナップショットを追記")
+    api_key = get_api_key_from_ui()
+    if not api_key:
+        st.info("サイドバーから YouTube API Key を入力してください。")
+    else:
+        url_or_id = st.text_input("URL / ID / 表示名 を入力（チャンネル）", "")
 
-    if status_btn:
-        if not API_KEY:
-            st.error("APIキー未設定です。サイドバーまたは secrets に設定してください。")
-        else:
-            channel_id = resolve_channel_id_simple(status_input, API_KEY)
-            if not channel_id:
-                st.error("チャンネルIDを解決できませんでした。URL / ID / 表示名を確認してください。")
+        status_btn = st.button("このチャンネルのステータスを Status に1行追記")
+
+        if status_btn:
+            if not url_or_id.strip():
+                st.error("URL / ID / 表示名 を入力してください。")
             else:
-                basic = get_channel_basic(channel_id, API_KEY)
-                if not basic:
-                    st.error("チャンネル情報の取得に失敗しました。")
+                channel_id = resolve_channel_id_simple(url_or_id, api_key)
+                if not channel_id:
+                    st.error("チャンネルIDを解決できませんでした。")
                 else:
-                    # 基本情報
-                    now_jst = datetime.now(JST)
-                    data_datetime_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-
-                    published_at_raw = basic.get("publishedAt")
-                    published_dt = None
-                    if published_at_raw:
-                        try:
-                            published_dt = datetime.fromisoformat(
-                                published_at_raw.replace("Z", "+00:00")
-                            )
-                        except Exception:
-                            published_dt = None
-
-                    if published_dt:
-                        days_active = (datetime.utcnow().replace(tzinfo=timezone.utc) - published_dt).days
-                        months_active = round(days_active / 30, 2)
+                    basic = get_channel_basic(channel_id, api_key)
+                    if not basic:
+                        st.error("チャンネル情報の取得に失敗しました。")
                     else:
-                        months_active = None
+                        # ===== 基本指標 =====
+                        now_jst = datetime.now(JST)
+                        # Status 用 logged_at：日付のみ（JST）
+                        data_date_str = now_jst.strftime("%Y/%m/%d")
 
-                    subs = basic.get("subscriberCount", 0)
-                    vids_total = basic.get("videoCount", 0)
-                    views_total = basic.get("viewCount", 0)
+                        published_at_raw = basic.get("publishedAt")
+                        published_dt: Optional[datetime] = None
+                        if published_at_raw:
+                            try:
+                                published_dt = datetime.fromisoformat(
+                                    published_at_raw.replace("Z", "+00:00")
+                                )
+                            except Exception:
+                                published_dt = None
 
-                    # 直近10日・30日
-                    ids_10 = search_video_ids_published_after(channel_id, 10, API_KEY)
-                    stats_10 = get_videos_stats(tuple(ids_10), API_KEY) if ids_10 else {}
-                    total_views_last10 = sum(v.get("viewCount", 0) for v in stats_10.values())
-                    num_videos_last10 = len(stats_10)
+                        if published_dt:
+                            # 活動月数（UTC基準で経過日数）
+                            days_active = (
+                                datetime.utcnow().replace(tzinfo=timezone.utc) - published_dt
+                            ).days
+                            months_active = round(days_active / 30, 2)
 
-                    ids_30 = search_video_ids_published_after(channel_id, 30, API_KEY)
-                    stats_30 = get_videos_stats(tuple(ids_30), API_KEY) if ids_30 else {}
-                    total_views_last30 = sum(v.get("viewCount", 0) for v in stats_30.values())
-                    num_videos_last30 = len(stats_30)
-
-                    # 直近10日のトップ動画
-                    if num_videos_last10 > 0:
-                        top_vid_10 = max(
-                            stats_10.items(),
-                            key=lambda kv: kv[1]["viewCount"],
-                        )
-                        top_info_10 = top_vid_10[1]
-                        top_title_last10 = (top_info_10.get("title") or "").replace("\n", " ").strip()
-                        top_views_last10 = top_info_10["viewCount"]
-                        top_share_last10 = (
-                            round(
-                                (top_views_last10 / total_views_last10)
-                                if total_views_last10 > 0 else 0.0,
-                                4,
-                            )
-                        )
-                    else:
-                        top_title_last10 = ""
-                        top_views_last10 = 0
-                        top_share_last10 = 0.0
-
-                    # 直近30日のトップ動画
-                    if num_videos_last30 > 0:
-                        top_vid_30 = max(
-                            stats_30.items(),
-                            key=lambda kv: kv[1]["viewCount"],
-                        )
-                        top_info_30 = top_vid_30[1]
-                        top_title_last30 = (top_info_30.get("title") or "").replace("\n", " ").strip()
-                        top_views_last30 = top_info_30["viewCount"]
-                        top_share_last30 = (
-                            round(
-                                (top_views_last30 / total_views_last30)
-                                if total_views_last30 > 0 else 0.0,
-                                4,
-                            )
-                        )
-                    else:
-                        top_title_last30 = ""
-                        top_views_last30 = 0
-                        top_share_last30 = 0.0
-
-                    # 各種指標
-                    views_per_sub = round((views_total / subs), 2) if subs > 0 else 0.0
-                    subs_per_total_view = (
-                        round((subs / views_total), 5) if views_total > 0 else 0.0
-                    )
-                    views_per_video = (
-                        round((views_total / vids_total), 2) if vids_total > 0 else 0.0
-                    )
-
-                    views_per_sub_last10 = (
-                        round((total_views_last10 / subs), 5) if subs > 0 else 0.0
-                    )
-                    views_per_sub_last30 = (
-                        round((total_views_last30 / subs), 5) if subs > 0 else 0.0
-                    )
-
-                    avg_views_per_video_last10 = (
-                        round((total_views_last10 / num_videos_last10), 2)
-                        if num_videos_last10 > 0 else 0.0
-                    )
-                    avg_views_per_video_last30 = (
-                        round((total_views_last30 / num_videos_last30), 2)
-                        if num_videos_last30 > 0 else 0.0
-                    )
-
-                    playlists_meta = get_playlists_meta(channel_id, API_KEY)
-                    playlist_count = len(playlists_meta)
-                    playlists_sorted = sorted(
-                        playlists_meta,
-                        key=lambda x: x["itemCount"],
-                        reverse=True,
-                    )
-                    top5_playlists = playlists_sorted[:5]
-                    while len(top5_playlists) < 5:
-                        top5_playlists.append({"title": "-", "itemCount": "-"})
-
-                    playlists_per_video = (
-                        round((playlist_count / vids_total), 5) if vids_total > 0 else 0.0
-                    )
-                    videos_per_month = (
-                        round((vids_total / months_active), 2)
-                        if months_active is not None and months_active > 0
-                        else 0.0
-                    )
-                    videos_per_subscriber = (
-                        round((vids_total / subs), 5) if subs > 0 else 0.0
-                    )
-                    subs_per_month = (
-                        round((subs / months_active), 2)
-                        if months_active is not None and months_active > 0
-                        else 0.0
-                    )
-                    subs_per_video = (
-                        round((subs / vids_total), 2) if vids_total > 0 else 0.0
-                    )
-
-                    # プレイリスト列
-                    playlist_cols = []
-                    for pl in top5_playlists:
-                        title = (pl.get("title", "") or "").replace("\n", " ").strip()
-                        ic = pl.get("itemCount", "")
-                        if ic in ("", None, "-"):
-                            playlist_cols.append(title)
+                            # チャンネル開設日も JST に変換して日付のみ
+                            published_dt_jst = published_dt.astimezone(JST)
+                            channel_published_str = published_dt_jst.strftime("%Y/%m/%d")
                         else:
-                            playlist_cols.append(f"{title}→{ic}")
+                            months_active = None
+                            channel_published_str = ""
 
-                    # Status 行データ
-                    status_row = [
-                        data_datetime_str,                                 # logged_at
-                        channel_id,                                        # channel_id
-                        basic.get("title") or "",                          # channel_title
-                        subs,                                              # subscriber_count
-                        vids_total,                                        # video_count
-                        views_total,                                       # view_count
-                        published_dt.strftime("%Y-%m-%d") if published_dt else "",  # channel_published_at
-                        months_active if months_active is not None else "",        # months_active
-                        subs_per_month,                                    # subs_per_month
-                        subs_per_video,                                    # subs_per_video
-                        views_per_video,                                   # views_per_video
-                        views_per_sub,                                     # views_per_sub
-                        subs_per_total_view,                               # subs_per_total_view
-                        playlists_per_video,                               # playlists_per_video
-                        videos_per_month,                                  # videos_per_month
-                        videos_per_subscriber,                             # videos_per_subscriber
-                        *playlist_cols,                                    # top_playlist_1〜5
-                        total_views_last10,                                # total_views_last10
-                        num_videos_last10,                                 # num_videos_last10
-                        top_title_last10,                                  # top_title_last10
-                        top_views_last10,                                  # top_views_last10
-                        top_share_last10,                                  # top_share_last10
-                        avg_views_per_video_last10,                        # avg_views_per_video_last10
-                        views_per_sub_last10,                              # views_per_sub_last10
-                        total_views_last30,                                # total_views_last30
-                        num_videos_last30,                                 # num_videos_last30
-                        top_title_last30,                                  # top_title_last30
-                        top_views_last30,                                  # top_views_last30
-                        top_share_last30,                                  # top_share_last30
-                        avg_views_per_video_last30,                        # avg_views_per_video_last30
-                        views_per_sub_last30,                              # views_per_sub_last30
-                    ]
+                        subs = basic.get("subscriberCount", 0)
+                        vids_total = basic.get("videoCount", 0)
+                        views_total = basic.get("viewCount", 0)
 
-                    try:
+                        # プレイリスト情報
+                        playlists_meta = get_playlists_meta(channel_id, api_key)
+                        playlist_count = len(playlists_meta)
+                        playlists_sorted = sorted(
+                            playlists_meta,
+                            key=lambda x: x["itemCount"],
+                            reverse=True,
+                        )
+                        top5_playlists = playlists_sorted[:5]
+                        while len(top5_playlists) < 5:
+                            top5_playlists.append({"title": "-", "itemCount": 0})
+
+                        playlist_cols = []
+                        for pl in top5_playlists:
+                            title = (pl.get("title", "") or "").replace("\n", " ").strip()
+                            item_count = pl.get("itemCount", 0)
+                            if title == "-" and item_count == 0:
+                                playlist_cols.append("-")
+                            else:
+                                playlist_cols.append(f"{title} ({item_count}本)")
+
+                        # 集計指標
+                        subs_per_month = (
+                            round(subs / months_active, 2)
+                            if months_active is not None and months_active > 0
+                            else 0.0
+                        )
+                        subs_per_video = (
+                            round(subs / vids_total, 2) if vids_total > 0 else 0.0
+                        )
+                        views_per_video = (
+                            round(views_total / vids_total, 2) if vids_total > 0 else 0.0
+                        )
+                        views_per_sub = (
+                            round(views_total / subs, 2) if subs > 0 else 0.0
+                        )
+                        subs_per_total_view = (
+                            round(subs / views_total, 5) if views_total > 0 else 0.0
+                        )
+                        playlists_per_video = (
+                            round(playlist_count / vids_total, 5)
+                            if vids_total > 0
+                            else 0.0
+                        )
+                        videos_per_month = (
+                            round(vids_total / months_active, 2)
+                            if months_active is not None and months_active > 0
+                            else 0.0
+                        )
+                        videos_per_subscriber = (
+                            round(vids_total / subs, 5) if subs > 0 else 0.0
+                        )
+
+                        # ===== 直近10日 / 30日の指標 =====
+                        ids_10 = search_video_ids_published_after(channel_id, 10, api_key)
+                        stats_10 = get_videos_stats(tuple(ids_10), api_key) if ids_10 else {}
+                        total_views_last10 = sum(
+                            v.get("viewCount", 0) for v in stats_10.values()
+                        )
+                        num_videos_last10 = len(stats_10)
+
+                        if num_videos_last10 > 0:
+                            top_vid_10 = max(
+                                stats_10.items(),
+                                key=lambda kv: kv[1]["viewCount"],
+                            )
+                            top_info_10 = top_vid_10[1]
+                            top_views_last10 = top_info_10["viewCount"]
+                            top_share_last10 = (
+                                round(
+                                    top_views_last10 / total_views_last10,
+                                    4,
+                                )
+                                if total_views_last10 > 0
+                                else 0.0
+                            )
+                            top_title_last10 = (
+                                top_info_10.get("title") or ""
+                            ).replace("\n", " ").strip()
+                        else:
+                            top_title_last10 = ""
+                            top_views_last10 = 0
+                            top_share_last10 = 0.0
+
+                        avg_views_per_video_last10 = (
+                            round(total_views_last10 / num_videos_last10, 2)
+                            if num_videos_last10 > 0
+                            else 0.0
+                        )
+                        views_per_sub_last10 = (
+                            round(total_views_last10 / subs, 5) if subs > 0 else 0.0
+                        )
+
+                        ids_30 = search_video_ids_published_after(channel_id, 30, api_key)
+                        stats_30 = get_videos_stats(tuple(ids_30), api_key) if ids_30 else {}
+                        total_views_last30 = sum(
+                            v.get("viewCount", 0) for v in stats_30.values()
+                        )
+                        num_videos_last30 = len(stats_30)
+
+                        if num_videos_last30 > 0:
+                            top_vid_30 = max(
+                                stats_30.items(),
+                                key=lambda kv: kv[1]["viewCount"],
+                            )
+                            top_info_30 = top_vid_30[1]
+                            top_views_last30 = top_info_30["viewCount"]
+                            top_share_last30 = (
+                                round(
+                                    top_views_last30 / total_views_last30,
+                                    4,
+                                )
+                                if total_views_last30 > 0
+                                else 0.0
+                            )
+                            top_title_last30 = (
+                                top_info_30.get("title") or ""
+                            ).replace("\n", " ").strip()
+                        else:
+                            top_title_last30 = ""
+                            top_views_last30 = 0
+                            top_share_last30 = 0.0
+
+                        avg_views_per_video_last30 = (
+                            round(total_views_last30 / num_videos_last30, 2)
+                            if num_videos_last30 > 0
+                            else 0.0
+                        )
+                        views_per_sub_last30 = (
+                            round(total_views_last30 / subs, 5) if subs > 0 else 0.0
+                        )
+
+                        # ===== Status シート1行分 =====
+                        status_row = [
+                            data_date_str,                                     # 取得日時（logged_at, JST yyyy/mm/dd）
+                            channel_id,                                        # チャンネルID
+                            basic.get("title") or "",                          # チャンネル名
+                            subs,                                              # 登録者数
+                            vids_total,                                        # 動画本数
+                            views_total,                                       # 総再生回数
+                            channel_published_str,                             # チャンネル開設日（JST yyyy/mm/dd）
+                            months_active if months_active is not None else "",# 活動月数
+                            subs_per_month,                                    # 累計登録者数/活動月
+                            subs_per_video,                                    # 累計登録者数/動画
+                            views_per_video,                                   # 累計動画あたり総再生回数
+                            views_per_sub,                                     # 累計総再生回数/登録者数
+                            subs_per_total_view,                               # 1再生あたり登録者増
+                            playlists_per_video,                               # 動画あたりプレイリスト数
+                            videos_per_month,                                  # 活動月あたり動画本数
+                            videos_per_subscriber,                             # 登録者あたり動画本数
+                            *playlist_cols,                                    # 上位プレイリスト1〜5
+                            total_views_last10,                                # 直近10日合計再生数
+                            num_videos_last10,                                 # 直近10日投稿数
+                            top_title_last10,                                  # 直近10日トップ動画タイトル
+                            top_views_last10,                                  # 直近10日トップ動画再生数
+                            top_share_last10,                                  # 直近10日トップ動画シェア
+                            avg_views_per_video_last10,                        # 直近10日平均再生数/動画
+                            views_per_sub_last10,                              # 直近10日視聴/登録比
+                            total_views_last30,                                # 直近30日合計再生数
+                            num_videos_last30,                                 # 直近30日投稿数
+                            top_title_last30,                                  # 直近30日トップ動画タイトル
+                            top_views_last30,                                  # 直近30日トップ動画再生数
+                            top_share_last30,                                  # 直近30日トップ動画シェア
+                            avg_views_per_video_last30,                        # 直近30日平均再生数/動画
+                            views_per_sub_last30,                              # 直近30日視聴/登録比
+                        ]
+
                         ws_status = get_status_worksheet()
-                        ws_status.append_row(status_row, value_input_option="USER_ENTERED")
-                        st.success("Status シートに最新スナップショットを 1 行追記しました。")
-                    except Exception as e:
-                        st.error(f"Status シートへの書き込みに失敗しました: {e}")
-                    else:
-                        # ざっくり画面にも出しておく
-                        st.write("---")
+                        append_rows(ws_status, [status_row])
+
+                        st.success("Status シートにチャンネルステータスを1行追記しました。")
                         st.write(f"チャンネル名: {basic.get('title')}")
                         st.write(f"登録者数: {subs}")
                         st.write(f"動画本数: {vids_total}")
                         st.write(f"総再生回数: {views_total}")
-                        st.write(f"活動開始日: {published_dt.strftime('%Y-%m-%d') if published_dt else '不明'}")
-                        st.write(f"活動月数: {months_active if months_active is not None else '-'}")
-                        st.write(f"累計登録者数/活動月: {subs_per_month}")
-                        st.write(f"累計動画あたり総再生回数: {views_per_video}")
-                        st.write(f"直近10日 合計再生数: {total_views_last10}（投稿数: {num_videos_last10}）")
-                        st.write(f"直近30日 合計再生数: {total_views_last30}（投稿数: {num_videos_last30}）")
