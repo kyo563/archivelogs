@@ -212,10 +212,6 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
 def resolve_video_id(url_or_id: str) -> Optional[str]:
     """
     URL or ID から videoId を抜き出す。
-    - https://www.youtube.com/watch?v=...
-    - https://youtu.be/...
-    - https://www.youtube.com/shorts/...
-    - 11桁のID など
     """
     s = (url_or_id or "").strip()
     if not s:
@@ -254,7 +250,7 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
 def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) -> List[Dict]:
     """
     チャンネルのアップロード済み動画（公開・処理済・アーカイブ済みのみ）を
-    新しい順に max_results 件まで取得。
+    公開日時の古い順に max_results 件まで取得。
     """
     youtube = get_youtube_client(api_key)
 
@@ -560,6 +556,9 @@ def get_videos_stats(video_ids: Tuple[str, ...], api_key: str) -> Dict[str, Dict
 
 st.title("YouTube ログ収集ツール")
 
+# ★ APIキー入力はここで一度だけ
+api_key = get_api_key_from_ui()
+
 tab_logs, tab_status = st.tabs(["動画ログ収集（record）", "チャンネルステータス（Status）"])
 
 # ----------------------------
@@ -568,7 +567,6 @@ tab_logs, tab_status = st.tabs(["動画ログ収集（record）", "チャンネ�
 with tab_logs:
     st.subheader("record シートに動画ログを追記")
 
-    api_key = get_api_key_from_ui()
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
     else:
@@ -632,7 +630,6 @@ with tab_logs:
 with tab_status:
     st.subheader("Status シートにチャンネル全体のスナップショットを追記")
 
-    api_key = get_api_key_from_ui()
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
     else:
