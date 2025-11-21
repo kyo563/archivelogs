@@ -40,41 +40,41 @@ RECORD_HEADER = [
 
 # Status シートのヘッダー
 STATUS_HEADER = [
-    "logged_at",                 # 1: 取得日時（JST）
-    "channel_id",               # 2
-    "channel_title",            # 3
-    "subscriber_count",         # 4
-    "video_count",              # 5
-    "view_count",               # 6
-    "channel_published_at",     # 7
-    "months_active",            # 8
-    "subs_per_month",           # 9
-    "subs_per_video",           # 10
-    "views_per_video",          # 11
-    "views_per_sub",            # 12
-    "subs_per_total_view",      # 13
-    "playlists_per_video",      # 14
-    "videos_per_month",         # 15
-    "videos_per_subscriber",    # 16
-    "top_playlist_1",           # 17
-    "top_playlist_2",           # 18
-    "top_playlist_3",           # 19
-    "top_playlist_4",           # 20
-    "top_playlist_5",           # 21
-    "total_views_last10",       # 22
-    "num_videos_last10",        # 23
-    "top_title_last10",         # 24
-    "top_views_last10",         # 25
-    "top_share_last10",         # 26
-    "avg_views_per_video_last10",  # 27
-    "views_per_sub_last10",     # 28
-    "total_views_last30",       # 29
-    "num_videos_last30",        # 30
-    "top_title_last30",         # 31
-    "top_views_last30",         # 32
-    "top_share_last30",         # 33
-    "avg_views_per_video_last30",  # 34
-    "views_per_sub_last30",     # 35
+    "取得日時",                  # logged_at
+    "チャンネルID",              # channel_id
+    "チャンネル名",              # channel_title
+    "登録者数",                  # subscriber_count
+    "動画本数",                  # video_count
+    "総再生回数",                # view_count
+    "チャンネル開設日",          # channel_published_at
+    "活動月数",                  # months_active
+    "累計登録者数/活動月",       # subs_per_month
+    "累計登録者数/動画",         # subs_per_video
+    "累計動画あたり総再生回数",  # views_per_video
+    "累計総再生回数/登録者数",   # views_per_sub
+    "1再生あたり登録者増",       # subs_per_total_view
+    "動画あたりプレイリスト数",   # playlists_per_video
+    "活動月あたり動画本数",      # videos_per_month
+    "登録者あたり動画本数",      # videos_per_subscriber
+    "上位プレイリスト1",         # top_playlist_1
+    "上位プレイリスト2",         # top_playlist_2
+    "上位プレイリスト3",         # top_playlist_3
+    "上位プレイリスト4",         # top_playlist_4
+    "上位プレイリスト5",         # top_playlist_5
+    "直近10日合計再生数",        # total_views_last10
+    "直近10日投稿数",            # num_videos_last10
+    "直近10日トップ動画タイトル",# top_title_last10
+    "直近10日トップ動画再生数",  # top_views_last10
+    "直近10日トップ動画シェア",  # top_share_last10
+    "直近10日平均再生数/動画",   # avg_views_per_video_last10
+    "直近10日視聴/登録比",       # views_per_sub_last10
+    "直近30日合計再生数",        # total_views_last30
+    "直近30日投稿数",            # num_videos_last30
+    "直近30日トップ動画タイトル",# top_title_last30
+    "直近30日トップ動画再生数",  # top_views_last30
+    "直近30日トップ動画シェア",  # top_share_last30
+    "直近30日平均再生数/動画",   # avg_views_per_video_last30
+    "直近30日視聴/登録比",       # views_per_sub_last30
 ]
 
 
