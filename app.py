@@ -586,6 +586,36 @@ st.title("ログ収集ツール")
 # ★ APIキー入力はここで一度だけ
 api_key = get_api_key_from_ui()
 
+
+def run_config_diagnostics(api_key: Optional[str]):
+    """APIキーとスプレッドシート接続の簡易チェックを行う。"""
+
+    with st.sidebar.expander("設定チェック", expanded=False):
+        st.write("YouTube API とスプレッドシート接続の動作確認を行います。")
+        if st.button("接続を検証", key="run_config_check"):
+            if not api_key:
+                st.error("YouTube API Key が未入力のため検証できません。")
+            else:
+                try:
+                    yt = get_youtube_client(api_key)
+                    yt.videos().list(
+                        part="id",
+                        id="dQw4w9WgXcQ",
+                        maxResults=1,
+                    ).execute()
+                    st.success("YouTube API に接続できました。")
+                except Exception as e:  # APIキー無効や権限不足などを可視化
+                    st.error(f"YouTube API への接続に失敗しました: {e}")
+
+            try:
+                spreadsheet = get_gspread_client().open_by_key(SPREADSHEET_ID)
+                st.success(f"スプレッドシート『{spreadsheet.title}』に接続できました。")
+            except Exception as e:
+                st.error(f"スプレッドシートへの接続に失敗しました: {e}")
+
+
+run_config_diagnostics(api_key)
+
 tab_logs, tab_status = st.tabs(["ログ（record）", "ステータス（Status）"])
 
 # ----------------------------
