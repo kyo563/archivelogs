@@ -82,6 +82,54 @@ STATUS_HEADER = [
 ]
 
 
+QUOTA_UNITS = {
+    "channels.list": 1,
+    "playlistItems.list": 1,
+    "videos.list": 1,
+    "search.list": 100,
+    "playlists.list": 1,
+}
+
+
+def ensure_quota_state() -> Dict:
+    if "quota_usage" not in st.session_state:
+        st.session_state["quota_usage"] = {"total": 0, "by_endpoint": {}}
+    return st.session_state["quota_usage"]
+
+
+def add_quota_usage(endpoint: str, count: int = 1):
+    usage = ensure_quota_state()
+    units = QUOTA_UNITS.get(endpoint, 0) * count
+    usage["total"] += units
+    usage["by_endpoint"][endpoint] = usage["by_endpoint"].get(endpoint, 0) + units
+
+
+def reset_quota_usage():
+    st.session_state["quota_usage"] = {"total": 0, "by_endpoint": {}}
+
+
+def render_quota_summary(label: str):
+    usage = ensure_quota_state()
+    st.markdown(f"### 概算クオータ（{label}）")
+    col_summary, col_reset = st.columns([3, 1])
+    with col_summary:
+        st.metric("累計", f"{usage['total']} 単位")
+        if usage["by_endpoint"]:
+            rows = [
+                {"エンドポイント": k, "概算単位": v}
+                for k, v in sorted(
+                    usage["by_endpoint"].items(), key=lambda kv: kv[1], reverse=True
+                )
+            ]
+            st.table(rows)
+        else:
+            st.write("まだ計測されたリクエストがありません。")
+    with col_reset:
+        if st.button("リセット", key=f"reset_quota_{label}"):
+            reset_quota_usage()
+            st.info("クオータ概算をリセットしました。")
+
+
 def get_api_key_from_ui() -> Optional[str]:
     """
     secrets に YOUTUBE_API_KEY があればそれを使い、
@@ -200,6 +248,7 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
 
     youtube = get_youtube_client(api_key)
     try:
+        add_quota_usage("search.list")
         resp = youtube.search().list(
             q=s,
             type="channel",
@@ -264,6 +313,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
 
     # uploads プレイリストID取得
     try:
+        add_quota_usage("channels.list")
         ch_resp = youtube.channels().list(
             part="contentDetails",
             id=channel_id,
@@ -296,6 +346,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
             remaining = max_results - len(video_ids)
             if remaining <= 0:
                 break
+            add_quota_usage("playlistItems.list")
             pl_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=uploads_playlist_id,
@@ -319,6 +370,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
 
     # video 本体
     try:
+        add_quota_usage("videos.list")
         v_resp = youtube.videos().list(
             part="snippet,contentDetails,statistics,status,liveStreamingDetails",
             id=",".join(video_ids),
@@ -360,6 +412,7 @@ def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
     """
     youtube = get_youtube_client(api_key)
     try:
+        add_quota_usage("videos.list")
         resp = youtube.videos().list(
             part="snippet,contentDetails,statistics,status,liveStreamingDetails",
             id=video_id,
@@ -449,6 +502,7 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
 def get_channel_basic(channel_id: str, api_key: str) -> Optional[Dict]:
     youtube = get_youtube_client(api_key)
     try:
+        add_quota_usage("channels.list")
         resp = youtube.channels().list(
             part="snippet,statistics,contentDetails",
             id=channel_id,
@@ -484,6 +538,7 @@ def get_playlists_meta(channel_id: str, api_key: str) -> List[Dict]:
 
     try:
         while True:
+            add_quota_usage("playlists.list")
             resp = youtube.playlists().list(
                 part="snippet,contentDetails",
                 channelId=channel_id,
@@ -522,6 +577,7 @@ def search_video_ids_published_after(
     next_page: Optional[str] = None
     try:
         while True:
+            add_quota_usage("search.list")
             resp = youtube.search().list(
                 part="id",
                 channelId=channel_id,
@@ -554,6 +610,7 @@ def get_videos_stats(video_ids: Tuple[str, ...], api_key: str) -> Dict[str, Dict
     for i in range(0, len(video_ids), 50):
         chunk = video_ids[i: i + 50]
         try:
+            add_quota_usage("videos.list")
             resp = youtube.videos().list(
                 part="snippet,statistics",
                 id=",".join(chunk),
@@ -598,6 +655,7 @@ def run_config_diagnostics(api_key: Optional[str]):
             else:
                 try:
                     yt = get_youtube_client(api_key)
+                    add_quota_usage("videos.list")
                     yt.videos().list(
                         part="id",
                         id="dQw4w9WgXcQ",
@@ -623,6 +681,7 @@ tab_logs, tab_status = st.tabs(["ログ（record）", "ステータス（Status�
 # ----------------------------
 with tab_logs:
     st.subheader("recordシート")
+    render_quota_summary("record")
 
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
@@ -686,6 +745,7 @@ with tab_logs:
 # ----------------------------
 with tab_status:
     st.subheader("Statusシート")
+    render_quota_summary("status")
 
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
