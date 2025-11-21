@@ -1,8 +1,37 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/app.py b/app.py
-index 94aa9ed4ab1cb91b3ea1362f2686c10b98f9ddd6..6ed0a62d973cc3eaaee0feb4cf7b413563455d26 100644
+index 94aa9ed4ab1cb91b3ea1362f2686c10b98f9ddd6..be97eef01d2572d13747da8c3cd45d1391871bbd 100644
 --- a/app.py
 +++ b/app.py
-@@ -231,139 +231,159 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
+@@ -1,25 +1,27 @@
++"""YouTube チャンネルの統計を収集する Streamlit アプリ。"""
++
+ import streamlit as st
+ from googleapiclient.discovery import build
+ from google.oauth2.service_account import Credentials
+ import gspread
+ 
+ from datetime import datetime, timedelta, timezone
+ from typing import List, Dict, Optional, Tuple
+ import re
+ from urllib.parse import urlparse, parse_qs
+ 
+ # ====================================
+ # 共通設定
+ # ====================================
+ 
+ st.set_page_config(page_title="ログ収集ツール", layout="wide")
+ 
+ # タイムゾーン（日本時間固定）
+ JST = timezone(timedelta(hours=9))
+ 
+ # スプレッドシート関連
+ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+ SPREADSHEET_ID = st.secrets.get("SPREADSHEET_ID", None)
+ RECORD_SHEET_NAME = st.secrets.get("WORKSHEET_NAME", "record")
+ STATUS_SHEET_NAME = "Status"
+ 
+@@ -231,139 +233,159 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
      # youtu.be
      if "youtu.be/" in s:
          return s.split("youtu.be/")[1].split("?")[0].split("/")[0]
@@ -179,7 +208,7 @@ index 94aa9ed4ab1cb91b3ea1362f2686c10b98f9ddd6..6ed0a62d973cc3eaaee0feb4cf7b4135
      video API の item から record シート1行分を構成。
      """
      snippet = item.get("snippet", {}) or {}
-@@ -481,92 +501,94 @@ def get_playlists_meta(channel_id: str, api_key: str) -> List[Dict]:
+@@ -481,92 +503,94 @@ def get_playlists_meta(channel_id: str, api_key: str) -> List[Dict]:
  
      return pls
  
@@ -277,3 +306,6 @@ index 94aa9ed4ab1cb91b3ea1362f2686c10b98f9ddd6..6ed0a62d973cc3eaaee0feb4cf7b4135
      if not api_key:
          st.info("サイドバーから YouTube API Key を入力してください。")
      else:
+ 
+EOF
+)
