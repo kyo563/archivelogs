@@ -554,7 +554,7 @@ def get_videos_stats(video_ids: Tuple[str, ...], api_key: str) -> Dict[str, Dict
 # UI
 # ====================================
 
-st.title("YouTube ログ収集ツール")
+st.title("ログ収集ツール")
 
 # ★ APIキー入力はここで一度だけ
 api_key = get_api_key_from_ui()
