@@ -111,23 +111,21 @@ def reset_quota_usage():
 def render_quota_summary(label: str):
     usage = ensure_quota_state()
     st.markdown(f"### 概算クオータ（{label}）")
-    col_summary, col_reset = st.columns([3, 1])
-    with col_summary:
-        st.metric("累計", f"{usage['total']} 単位")
-        if usage["by_endpoint"]:
-            rows = [
-                {"エンドポイント": k, "概算単位": v}
-                for k, v in sorted(
-                    usage["by_endpoint"].items(), key=lambda kv: kv[1], reverse=True
-                )
-            ]
-            st.table(rows)
-        else:
-            st.write("まだ計測されたリクエストがありません。")
-    with col_reset:
-        if st.button("リセット", key=f"reset_quota_{label}"):
-            reset_quota_usage()
-            st.info("クオータ概算をリセットしました。")
+    st.write(f"概算クオータ {usage['total']} 単位（累計）")
+    if usage["by_endpoint"]:
+        rows = [
+            {"エンドポイント": k, "概算単位": v}
+            for k, v in sorted(
+                usage["by_endpoint"].items(), key=lambda kv: kv[1], reverse=True
+            )
+        ]
+        st.table(rows)
+    else:
+        st.write("まだ計測されたリクエストがありません。")
+
+    if st.button("リセット", key=f"reset_quota_{label}"):
+        reset_quota_usage()
+        st.info("クオータ概算をリセットしました。")
 
 
 def get_api_key_from_ui() -> Optional[str]:
