@@ -672,14 +672,14 @@ def run_config_diagnostics(api_key: Optional[str]):
 
 run_config_diagnostics(api_key)
 
-tab_logs, tab_status = st.tabs(["ログ（record）", "ステータス（Status）"])
+tab_logs, tab_status = st.tabs(["ログ（Record）", "ステータス（Status）"])
 
 # ----------------------------
 # タブ1: 動画ログ収集（record）
 # ----------------------------
 with tab_logs:
-    st.subheader("recordシート")
-    render_quota_summary("record")
+    st.subheader("Recordシート")
+    render_quota_summary("Record")
 
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
@@ -689,9 +689,9 @@ with tab_logs:
 
         col1, col2 = st.columns(2)
         with col1:
-            run_recent_btn = st.button("直近50件を record に追記")
+            run_recent_btn = st.button("直近50件を Record に追記")
         with col2:
-            run_single_btn = st.button("この動画だけ record に追記")
+            run_single_btn = st.button("この動画だけ Record に追記")
 
         ws_record = get_record_worksheet()
 
@@ -716,7 +716,7 @@ with tab_logs:
                             for it in items
                         ]
                         append_rows(ws_record, rows)
-                        st.success(f"{len(rows)}件の動画ログを record シートに追記しました。")
+                        st.success(f"{len(rows)}件の動画ログを Record シートに追記しました。")
 
         # 単一動画
         if run_single_btn:
@@ -736,14 +736,14 @@ with tab_logs:
                         logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                         row = build_record_row_from_video_item(item, logged_at_str)
                         append_rows(ws_record, [row])
-                        st.success("1件の動画ログを record シートに追記しました。")
+                        st.success("1件の動画ログを Record シートに追記しました。")
 
 # ----------------------------
 # タブ2: チャンネルステータス（Status）
 # ----------------------------
 with tab_status:
     st.subheader("Statusシート")
-    render_quota_summary("status")
+    render_quota_summary("Status")
 
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
