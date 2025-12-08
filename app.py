@@ -862,20 +862,39 @@ def build_status_row(status: Dict) -> List:
 
 def build_status_summary_text(status: Dict) -> str:
     """
-    旧解析ツール互換のテキスト出力を生成する（説明付き、ChatGPT投げ込み用）。
+    解析用の「=== 集計結果 ===」形式テキストを生成する。
+    （そのままChatGPTに投げ込むことを想定した説明付きフォーマット）
     """
     lines: List[str] = []
-    lines.append("=== チャンネルステータス ===")
+
+    # 見出し
+    lines.append("=== 集計結果 ===")
     lines.append("")
+
+    # 基本情報
     lines.append("■ 基本情報")
-    lines.append(f"取得日時: {status['data_date_str']}")
-    lines.append(f"チャンネルID: {status['channel_id']}")
+    lines.append(f"データ取得日: {status['data_date_str']}（このツールで集計を行った日）")
+    lines.append(f"チャンネルID: {status['channel_id']}（UCから始まる固有ID）")
     lines.append(f"チャンネル名: {status['channel_title']}")
-    lines.append(f"登録者数: {status['subs']}")
-    lines.append(f"動画本数: {status['vids_total']}")
-    lines.append(f"総再生回数: {status['views_total']}")
-    lines.append(f"チャンネル開設日: {status['channel_published_str']}")
-    lines.append(f"活動月数: {status['months_active']}")
+    lines.append(f"登録者数: {status['subs']}（現在の登録者総数）")
+    lines.append(f"動画本数: {status['vids_total']}（公開済み動画の本数）")
+    lines.append(f"総再生回数: {status['views_total']}（公開済み動画の累計再生数）")
+    lines.append(f"活動開始日: {status['channel_published_str']}（チャンネル作成日）")
+
+    months_active = status.get("months_active")
+    months_str = "" if months_active is None else str(months_active)
+    lines.append(f"活動月数: {months_str}（チャンネル開設からの日数 ÷ 30 を概算）")
+    lines.append("")
+
+    # 累計指標
+    lines.append(f"累計登録者数/活動月: {status['subs_per_month']}（現在の登録者数 ÷ 活動月数）")
+    lines.append(f"累計登録者数/動画: {status['subs_per_video']}（現在の登録者数 ÷ 動画本数）")
+    lines.append(f"累計動画あたり総再生回数: {status['views_per_video']}（総再生回数 ÷ 動画本数）")
+    lines.append(f"累計総再生回数/登録者数: {status['views_per_sub']}（総再生回数 ÷ 登録者数）")
+    lines.append(f"1再生あたり登録者増: {status['subs_per_total_view']}（登録者数 ÷ 総再生回数）")
+    lines.append(f"動画あたりプレイリスト数: {status['playlists_per_video']}（プレイリスト総数 ÷ 動画本数）")
+    lines.append(f"活動月あたり動画本数: {status['videos_per_month']}（動画本数 ÷ 活動月数）")
+    lines.append(f"登録者あたり動画本数: {status['videos_per_subscriber']}（動画本数 ÷ 登録者数）")
     lines.append("")
 
     # 上位プレイリスト
@@ -886,33 +905,67 @@ def build_status_summary_text(status: Dict) -> str:
         lines.append(f"{i}位: {title} → {count}本")
     lines.append("")
 
+    # 直近指標
+    lines.append("■ 直近指標")
+
     # 直近10日
-    lines.append("■ 直近10日")
-    lines.append(f"合計再生数: {status['total_views_last10']}")
-    lines.append(f"投稿数: {status['num_videos_last10']}")
-    lines.append(f"トップ動画: {status['top_title_last10']}")
-    lines.append(f"トップ動画再生数: {status['top_views_last10']}")
-    lines.append(f"トップ動画シェア: {status['top_share_last10']}")
-    lines.append(f"平均再生/動画: {status['avg_views_per_video_last10']}")
-    lines.append(f"視聴/登録比: {status['views_per_sub_last10']}")
-    lines.append("")
+    lines.append(
+        f"直近10日 合計再生数: {status['total_views_last10']}（直近10日間に公開された動画の再生数合計）"
+    )
+    lines.append(
+        f"直近10日 投稿数: {status['num_videos_last10']}（直近10日間に公開された公開動画本数）"
+    )
+
+    if status["num_videos_last10"] > 0:
+        share10_pct = status["top_share_last10"] * 100
+        lines.append("直近10日 トップ動画:")
+        lines.append(
+            f"- 『{status['top_title_last10']}』 — "
+            f"views: {status['top_views_last10']}（この動画単体の再生数） | "
+            f"share: {share10_pct:.2f}%（直近10日の合計再生数に占める割合）"
+        )
+    else:
+        lines.append("直近10日 トップ動画: データなし")
+
+    lines.append(
+        f"直近10日 平均再生: {status['avg_views_per_video_last10']}（直近10日間の合計再生数 ÷ 投稿数）"
+    )
+    lines.append(
+        f"直近10日 視聴/登録比: {status['views_per_sub_last10']}（直近10日の合計再生数 ÷ 現在の登録者数）"
+    )
 
     # 直近30日
-    lines.append("■ 直近30日")
-    lines.append(f"合計再生数: {status['total_views_last30']}")
-    lines.append(f"投稿数: {status['num_videos_last30']}")
-    lines.append(f"トップ動画: {status['top_title_last30']}")
-    lines.append(f"トップ動画再生数: {status['top_views_last30']}")
-    lines.append(f"トップ動画シェア: {status['top_share_last30']}")
-    lines.append(f"平均再生/動画: {status['avg_views_per_video_last30']}")
-    lines.append(f"視聴/登録比: {status['views_per_sub_last30']}")
+    lines.append(
+        f"直近30日 合計再生数: {status['total_views_last30']}（直近30日間に公開された動画の再生数合計）"
+    )
+    lines.append(
+        f"直近30日 投稿数: {status['num_videos_last30']}（直近30日間に公開された公開動画本数）"
+    )
+
+    if status["num_videos_last30"] > 0:
+        share30_pct = status["top_share_last30"] * 100
+        lines.append("直近30日 トップ動画:")
+        lines.append(
+            f"- 『{status['top_title_last30']}』 — "
+            f"views: {status['top_views_last30']}（この動画単体の再生数） | "
+            f"share: {share30_pct:.2f}%（直近30日の合計再生数に占める割合）"
+        )
+    else:
+        lines.append("直近30日 トップ動画: データなし")
+
+    lines.append(
+        f"直近30日 平均再生: {status['avg_views_per_video_last30']}（直近30日間の合計再生数 ÷ 投稿数）"
+    )
+    lines.append(
+        f"直近30日 視聴/登録比: {status['views_per_sub_last30']}（直近30日の合計再生数 ÷ 現在の登録者数）"
+    )
 
     return "\n".join(lines)
 
 
 def build_status_numeric_text(status: Dict) -> str:
     """
-    数字主体の簡素なテキスト（あなたが提示したサンプル形式）を生成する。
+    数字主体の簡素なテキスト（あなたが提示したサンプル形式に近いもの）を生成する。
     ChatGPT に投げる前に人間が加工・確認する用途や、
     Excel 等に貼るときに使うことを想定。
     """
@@ -927,7 +980,7 @@ def build_status_numeric_text(status: Dict) -> str:
     lines.append(str(status["views_total"]))        # 総再生回数
     lines.append(str(status["channel_published_str"]))  # 開設日
 
-    # 活動月数と各種指標（サンプルと同じ並び）
+    # 活動月数と各種指標（サンプルと同じ並びを意識）
     months_active = status.get("months_active")
     lines.append("" if months_active is None else str(months_active))
     lines.append(str(status["subs_per_month"]))
@@ -944,7 +997,6 @@ def build_status_numeric_text(status: Dict) -> str:
         title = (pl.get("title") or "").replace("\n", " ")
         count = pl.get("itemCount", 0)
         if title == "-" and count == 0:
-            # データが無い場合は飛ばしても良いが、揃えたいなら "-" だけでも良い
             continue
         lines.append(f"{title}→{count}")
 
