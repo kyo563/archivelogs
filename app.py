@@ -1059,7 +1059,7 @@ def run_config_diagnostics(api_key: Optional[str]):
 run_config_diagnostics(api_key)
 
 tab_logs, tab_status, tab_status_txt = st.tabs(
-    ["ログ（Record）", "ステータス（Status）", "ステータス解析（TXT/コピーのみ）"]
+    ["ログ（Record）", "ステータス（Status）", "分析（TXT/コピー）"]
 )
 
 # ----------------------------
