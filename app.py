@@ -862,50 +862,152 @@ def build_status_row(status: Dict) -> List:
 
 def build_status_summary_text(status: Dict) -> str:
     """
-    旧解析ツール互換のテキスト出力を生成する。
+    ChatGPT へのコピペを前提とした、説明付きステータステキストを生成する。
+    各数値が何を意味するかをラベルと補足で明示している。
     """
     lines: List[str] = []
-    lines.append("=== チャンネルステータス ===")
+    lines.append("=== チャンネルステータス（ChatGPT解析用）===")
     lines.append("")
+    # 基本情報
     lines.append("■ 基本情報")
-    lines.append(f"取得日時: {status['data_date_str']}")
+    lines.append(f"取得日時（JST）: {status['data_date_str']}")
     lines.append(f"チャンネルID: {status['channel_id']}")
     lines.append(f"チャンネル名: {status['channel_title']}")
-    lines.append(f"登録者数: {status['subs']}")
-    lines.append(f"動画本数: {status['vids_total']}")
-    lines.append(f"総再生回数: {status['views_total']}")
-    lines.append(f"チャンネル開設日: {status['channel_published_str']}")
-    lines.append(f"活動月数: {status['months_active']}")
+    lines.append(f"登録者数（現在のチャンネル登録者数）: {status['subs']}")
+    lines.append(f"動画本数（公開済み動画の本数）: {status['vids_total']}")
+    lines.append(f"総再生回数（公開済み動画の累計再生回数）: {status['views_total']}")
+    lines.append(f"チャンネル開設日（JST）: {status['channel_published_str']}")
+    lines.append(f"活動月数（チャンネル開設からの経過月数）: {status['months_active']}")
     lines.append("")
-
-    # 上位プレイリスト
+    # 累計指標
+    lines.append("■ 累計指標")
+    lines.append(
+        f"累計登録者数/活動月（1ヶ月あたりの平均登録者増加数）: {status['subs_per_month']}"
+    )
+    lines.append(
+        f"累計登録者数/動画（動画1本あたりの平均登録者数）: {status['subs_per_video']}"
+    )
+    lines.append(
+        f"累計動画あたり総再生回数（動画1本あたりの平均再生数）: {status['views_per_video']}"
+    )
+    lines.append(
+        f"累計総再生回数/登録者数（登録者1人あたりの平均再生数）: {status['views_per_sub']}"
+    )
+    lines.append(
+        f"1再生あたり登録者増（総再生回数に対する登録者数比）: {status['subs_per_total_view']}"
+    )
+    lines.append(
+        f"動画あたりプレイリスト数（動画1本あたりに所属するプレイリスト数の平均）: {status['playlists_per_video']}"
+    )
+    lines.append(
+        f"活動月あたり動画本数（1ヶ月あたりの動画投稿本数）: {status['videos_per_month']}"
+    )
+    lines.append(
+        f"登録者あたり動画本数（登録者1人あたりに対応する動画本数）: {status['videos_per_subscriber']}"
+    )
+    lines.append("")
+    # プレイリスト
     lines.append("■ 上位プレイリスト（件数順）")
     for i, pl in enumerate(status["top5_playlists"], start=1):
         title = (pl.get("title") or "").replace("\n", " ")
         count = pl.get("itemCount", 0)
-        lines.append(f"{i}位: {title} → {count}本")
+        lines.append(f"{i}位: {title}（登録動画本数: {count}本）")
     lines.append("")
+    # 直近10日
+    lines.append("■ 直近10日（直近10日間に公開された動画）")
+    lines.append(f"直近10日合計再生数: {status['total_views_last10']}")
+    lines.append(f"直近10日投稿数（動画本数）: {status['num_videos_last10']}")
+    lines.append(
+        f"直近10日トップ動画タイトル（期間内で最も再生された動画）: {status['top_title_last10']}"
+    )
+    lines.append(f"直近10日トップ動画再生数: {status['top_views_last10']}")
+    lines.append(
+        f"直近10日トップ動画シェア（直近10日合計再生数に対するトップ動画再生数の割合）: {status['top_share_last10']}"
+    )
+    lines.append(
+        f"直近10日平均再生/動画（直近10日合計再生数 ÷ 直近10日投稿数）: {status['avg_views_per_video_last10']}"
+    )
+    lines.append(
+        f"直近10日視聴/登録比（直近10日合計再生数 ÷ 現在の登録者数）: {status['views_per_sub_last10']}"
+    )
+    lines.append("")
+    # 直近30日
+    lines.append("■ 直近30日（直近30日間に公開された動画）")
+    lines.append(f"直近30日合計再生数: {status['total_views_last30']}")
+    lines.append(f"直近30日投稿数（動画本数）: {status['num_videos_last30']}")
+    lines.append(
+        f"直近30日トップ動画タイトル（期間内で最も再生された動画）: {status['top_title_last30']}"
+    )
+    lines.append(f"直近30日トップ動画再生数: {status['top_views_last30']}")
+    lines.append(
+        f"直近30日トップ動画シェア（直近30日合計再生数に対するトップ動画再生数の割合）: {status['top_share_last30']}"
+    )
+    lines.append(
+        f"直近30日平均再生/動画（直近30日合計再生数 ÷ 直近30日投稿数）: {status['avg_views_per_video_last30']}"
+    )
+    lines.append(
+        f"直近30日視聴/登録比（直近30日合計再生数 ÷ 現在の登録者数）: {status['views_per_sub_last30']}"
+    )
+
+    return "\n".join(lines)
+
+
+def build_status_numeric_text(status: Dict) -> str:
+    """
+    数値に対応する値だけを順番に並べたテキスト（TXT保存用）を生成する。
+    ChatGPT に貼るときは、こちらではなく build_status_summary_text の方を使う。
+    """
+    lines: List[str] = []
+
+    # 基本情報
+    lines.append(status["data_date_str"])
+    lines.append(status["channel_id"])
+    lines.append(status["channel_title"])
+    lines.append(str(status["subs"]))
+    lines.append(str(status["vids_total"]))
+    lines.append(str(status["views_total"]))
+
+    # 開設日をハイフン区切りに寄せる（例: 2022-05-02）
+    opened = status["channel_published_str"] or ""
+    lines.append(opened.replace("/", "-") if opened else "")
+
+    # 累計指標
+    def _fmt(v):
+        return "" if v is None else str(v)
+
+    lines.append(_fmt(status["months_active"]))
+    lines.append(_fmt(status["subs_per_month"]))
+    lines.append(_fmt(status["subs_per_video"]))
+    lines.append(_fmt(status["views_per_video"]))
+    lines.append(_fmt(status["views_per_sub"]))
+    lines.append(_fmt(status["subs_per_total_view"]))
+    lines.append(_fmt(status["playlists_per_video"]))
+    lines.append(_fmt(status["videos_per_month"]))
+    lines.append(_fmt(status["videos_per_subscriber"]))
+
+    # 上位プレイリスト（タイトル→本数）
+    for pl in status["top5_playlists"]:
+        title = (pl.get("title") or "").replace("\n", " ")
+        count = pl.get("itemCount", 0)
+        lines.append(f"{title}→{count}")
 
     # 直近10日
-    lines.append("■ 直近10日")
-    lines.append(f"合計再生数: {status['total_views_last10']}")
-    lines.append(f"投稿数: {status['num_videos_last10']}")
-    lines.append(f"トップ動画: {status['top_title_last10']}")
-    lines.append(f"トップ動画再生数: {status['top_views_last10']}")
-    lines.append(f"トップ動画シェア: {status['top_share_last10']}")
-    lines.append(f"平均再生/動画: {status['avg_views_per_video_last10']}")
-    lines.append(f"視聴/登録比: {status['views_per_sub_last10']}")
-    lines.append("")
+    lines.append(str(status["total_views_last10"]))
+    lines.append(str(status["num_videos_last10"]))
+    lines.append(status["top_title_last10"])
+    lines.append(str(status["top_views_last10"]))
+    lines.append(str(status["top_share_last10"]))
+    lines.append(str(status["avg_views_per_video_last10"]))
+    lines.append(str(status["views_per_sub_last10"]))
 
     # 直近30日
-    lines.append("■ 直近30日")
-    lines.append(f"合計再生数: {status['total_views_last30']}")
-    lines.append(f"投稿数: {status['num_videos_last30']}")
-    lines.append(f"トップ動画: {status['top_title_last30']}")
-    lines.append(f"トップ動画再生数: {status['top_views_last30']}")
-    lines.append(f"トップ動画シェア: {status['top_share_last30']}")
-    lines.append(f"平均再生/動画: {status['avg_views_per_video_last30']}")
-    lines.append(f"視聴/登録比: {status['views_per_sub_last30']}")
+    lines.append(str(status["total_views_last30"]))
+    lines.append(str(status["num_videos_last30"]))
+    lines.append(status["top_title_last30"])
+    lines.append(str(status["top_views_last30"]))
+    lines.append(str(status["top_share_last30"]))
+    lines.append(str(status["avg_views_per_video_last30"]))
+    lines.append(str(status["views_per_sub_last30"]))
 
     return "\n".join(lines)
 
@@ -1095,21 +1197,27 @@ with tab_status_txt:
                     if not status:
                         st.error("チャンネル情報の取得に失敗しました。")
                     else:
+                        # ChatGPT解析用（ラベル付きテキスト）
                         summary_text = build_status_summary_text(status)
+                        # 数値のみテキスト
+                        numeric_text = build_status_numeric_text(status)
 
-                        st.markdown("#### 集計結果（プレビュー）")
+                        st.markdown("#### 集計結果（説明付き：ChatGPT解析用プレビュー）")
                         st.text(summary_text)
 
-                        # TXT ダウンロードボタン
-                        txt_bytes = summary_text.encode("utf-8")
+                        st.markdown("#### 数値のみテキスト（TXT出力用プレビュー）")
+                        st.text(numeric_text)
+
+                        # TXT ダウンロードボタン（数値のみ）
+                        numeric_bytes = numeric_text.encode("utf-8")
                         st.download_button(
-                            label="📄 TXT をダウンロード",
-                            data=txt_bytes,
-                            file_name="channel_status.txt",
+                            label="📄 TXT（数値のみ）をダウンロード",
+                            data=numeric_bytes,
+                            file_name="channel_status_numeric.txt",
                             mime="text/plain",
                         )
 
-                        # クリップボードコピー
+                        # クリップボードコピー（説明付きテキスト）
                         components.html(
                             f"""
                             <button onclick="navigator.clipboard.writeText({json.dumps(summary_text)})"
@@ -1123,7 +1231,7 @@ with tab_status_txt:
                                     font-size: 0.9rem;
                                     margin-top: 0.5rem;
                                 ">
-                                📋 集計結果をコピー
+                                📋 集計結果（説明付き）をコピー
                             </button>
                             """,
                             height=80,
