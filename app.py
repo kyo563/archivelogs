@@ -1178,7 +1178,7 @@ with tab_status:
 # タブ3: チャンネルステータス解析（TXT/コピーのみ）
 # ----------------------------
 with tab_status_txt:
-    st.subheader("ステータス解析（TXT/コピーのみ）")
+    st.subheader("簡易解析")
     render_quota_summary("Status解析")
 
     if not api_key:
@@ -1260,5 +1260,3 @@ with tab_status_txt:
                         st.markdown("#### 集計結果（説明付き：ChatGPT解析用プレビュー）")
                         st.text(summary_text)
 
-                        st.markdown("#### 数値のみテキスト（TXT出力用プレビュー）")
-                        st.text(numeric_text)
