@@ -965,13 +965,11 @@ def build_status_summary_text(status: Dict) -> str:
 
 def build_status_numeric_text(status: Dict) -> str:
     """
-    数字主体の簡素なテキスト（あなたが提示したサンプル形式に近いもの）を生成する。
-    ChatGPT に投げる前に人間が加工・確認する用途や、
-    Excel 等に貼るときに使うことを想定。
+    数字主体の簡素なテキスト（提示されたサンプル形式に近いもの）を生成する。
     """
     lines: List[str] = []
 
-    # 基本情報（行頭〜）
+    # 基本情報
     lines.append(str(status["data_date_str"]))      # 取得日
     lines.append(str(status["channel_id"]))         # チャンネルID
     lines.append(str(status["channel_title"]))      # チャンネル名
@@ -980,7 +978,7 @@ def build_status_numeric_text(status: Dict) -> str:
     lines.append(str(status["views_total"]))        # 総再生回数
     lines.append(str(status["channel_published_str"]))  # 開設日
 
-    # 活動月数と各種指標（サンプルと同じ並びを意識）
+    # 活動月数と各種指標
     months_active = status.get("months_active")
     lines.append("" if months_active is None else str(months_active))
     lines.append(str(status["subs_per_month"]))
@@ -996,8 +994,7 @@ def build_status_numeric_text(status: Dict) -> str:
     for pl in status["top5_playlists"]:
         title = (pl.get("title") or "").replace("\n", " ")
         count = pl.get("itemCount", 0)
-        if title == "-" and count == 0:
-            continue
+        # サンプルに合わせて「タイトル→数値」
         lines.append(f"{title}→{count}")
 
     # 直近10日ブロック
@@ -1222,21 +1219,41 @@ with tab_status_txt:
                         # 取得ボタン直下：説明付きテキストをクリップボードにコピー
                         components.html(
                             f"""
-                            <button onclick="navigator.clipboard.writeText({json.dumps(summary_text)})"
-                                style="
-                                    background-color: #FF4B4B;
-                                    color: white;
-                                    border: none;
-                                    padding: 0.4rem 1rem;
-                                    border-radius: 0.3rem;
-                                    cursor: pointer;
-                                    font-size: 0.9rem;
-                                    margin-top: 0.5rem;
-                                ">
-                                📋 集計結果（説明付き）をコピー
-                            </button>
+<div>
+  <button id="copySummaryBtn"
+      style="
+          background-color: #FF4B4B;
+          color: white;
+          border: none;
+          padding: 0.4rem 1rem;
+          border-radius: 0.3rem;
+          cursor: pointer;
+          font-size: 0.9rem;
+          margin-top: 0.5rem;
+      ">
+      📋 集計結果（説明付き）をコピー
+  </button>
+  <span id="copySummaryStatus"
+      style="margin-left: 0.5rem; font-size: 0.85rem; color: #333;">
+  </span>
+
+  <script>
+    const textToCopy = {json.dumps(summary_text)};
+    const btn = document.getElementById("copySummaryBtn");
+    const status = document.getElementById("copySummaryStatus");
+
+    btn.addEventListener("click", async () => {{
+      try {{
+        await navigator.clipboard.writeText(textToCopy);
+        status.textContent = "コピーしました。";
+      }} catch (err) {{
+        status.textContent = "コピーに失敗しました: " + err;
+      }}
+    }});
+  </script>
+</div>
                             """,
-                            height=80,
+                            height=100,
                         )
 
                         # 下にプレビュー（必要なときだけスクロールして確認）
