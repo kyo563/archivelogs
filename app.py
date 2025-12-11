@@ -170,6 +170,7 @@ def get_gspread_client():
 # スプレッドシートユーティリティ
 # ====================================
 
+@st.cache_resource
 def get_record_worksheet():
     client = get_gspread_client()
     sh = client.open_by_key(SPREADSHEET_ID)
@@ -186,6 +187,7 @@ def get_record_worksheet():
     return ws
 
 
+@st.cache_resource
 def get_status_worksheet():
     client = get_gspread_client()
     sh = client.open_by_key(SPREADSHEET_ID)
@@ -1081,10 +1083,9 @@ with tab_logs:
         with col2:
             run_single_btn = st.button("この動画だけ Record に追記")
 
-        ws_record = get_record_worksheet()
-
         # 直近50件（チャンネル）
         if run_recent_btn:
+            ws_record = get_record_worksheet()
             if not channel_input.strip():
                 st.error("チャンネルURL / ID を入力してください。")
             else:
@@ -1110,6 +1111,7 @@ with tab_logs:
 
         # 単一動画
         if run_single_btn:
+            ws_record = get_record_worksheet()
             if not video_input.strip():
                 st.error("動画URL / ID を入力してください。")
             else:
@@ -1259,4 +1261,3 @@ with tab_status_txt:
                         # 下にプレビュー（必要なときだけスクロールして確認）
                         st.markdown("#### 集計結果（説明付き：ChatGPT解析用プレビュー）")
                         st.text(summary_text)
-
