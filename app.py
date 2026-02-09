@@ -87,6 +87,12 @@ STATUS_HEADER = [
 ]
 
 # YouTube Data API の概算クオータ
+ROUTINE_RECORD_CHANNEL_ID = "UCojaLfI34qEb0pCTtbjDeEg"
+ROUTINE_STATUS_CHANNEL_IDS = [
+    "UCojaLfI34qEb0pCTtbjDeEg",
+    "UC24z3yE1Mig66jwaSbZI0UA",
+]
+
 QUOTA_UNITS = {
     "channels.list": 1,
     "playlistItems.list": 1,
@@ -1261,6 +1267,48 @@ with tab_logs:
         with col3:
             refresh_comments_btn = st.button("Record のコメント数を更新（H列）")
 
+        routine_btn = st.button("ルーティン")
+
+        if routine_btn:
+            ws_record = get_record_worksheet()
+            ws_status = get_status_worksheet()
+            with st.spinner("ルーティンを実行中..."):
+                record_items = fetch_channel_upload_items(
+                    ROUTINE_RECORD_CHANNEL_ID,
+                    max_results=50,
+                    api_key=api_key,
+                )
+
+                record_count = 0
+                if record_items:
+                    logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
+                    record_rows = [
+                        build_record_row_from_video_item(it, logged_at_str)
+                        for it in record_items
+                    ]
+                    append_rows(ws_record, record_rows)
+                    record_count = len(record_rows)
+
+                status_rows: List[List] = []
+                failed_status_ids: List[str] = []
+                for channel_id in ROUTINE_STATUS_CHANNEL_IDS:
+                    status = compute_channel_status(channel_id, api_key)
+                    if status:
+                        status_rows.append(build_status_row(status))
+                    else:
+                        failed_status_ids.append(channel_id)
+
+                if status_rows:
+                    append_rows(ws_status, status_rows)
+
+            st.success(
+                f"ルーティン完了: Record {record_count}件 / Status {len(status_rows)}件を追記しました。"
+            )
+            if failed_status_ids:
+                st.warning(
+                    "Status 取得に失敗したチャンネルID: "
+                    + ", ".join(failed_status_ids)
+                )
 
         if refresh_comments_btn:
             ws_record = get_record_worksheet()
