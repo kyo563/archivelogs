@@ -30,6 +30,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = st.secrets.get("SPREADSHEET_ID", None)
 RECORD_SHEET_NAME = st.secrets.get("WORKSHEET_NAME", "record")
 STATUS_SHEET_NAME = "Status"
+SEARCH_TARGET_SHEET_NAME = "検索対象"
 
 if SPREADSHEET_ID is None:
     raise RuntimeError('st.secrets["SPREADSHEET_ID"] が設定されていません。')
@@ -209,6 +210,90 @@ def get_status_worksheet():
     if not first_row:
         ws.append_row(STATUS_HEADER)
     return ws
+
+
+@st.cache_resource
+def get_search_target_worksheet():
+    client = get_gspread_client()
+    sh = client.open_by_key(SPREADSHEET_ID)
+    try:
+        ws = sh.worksheet(SEARCH_TARGET_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=SEARCH_TARGET_SHEET_NAME, rows=1000, cols=10)
+        ws.append_row(["チャンネルID", "チャンネル名"])
+        return ws
+
+    first_row = ws.row_values(1)
+    if not first_row:
+        ws.append_row(["チャンネルID", "チャンネル名"])
+    return ws
+
+
+def read_search_targets() -> List[Dict[str, str]]:
+    ws = get_search_target_worksheet()
+    rows = ws.get_all_values()
+    targets: List[Dict[str, str]] = []
+    for row in rows[1:]:
+        channel_id = row[0].strip() if len(row) >= 1 else ""
+        channel_name = row[1].strip() if len(row) >= 2 else ""
+        if not channel_id:
+            continue
+        targets.append({"channel_id": channel_id, "channel_name": channel_name})
+    return targets
+
+
+def parse_status_date(date_str: str) -> Optional[datetime]:
+    text = (date_str or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y/%m/%d", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def get_latest_status_dates() -> Dict[str, datetime]:
+    ws = get_status_worksheet()
+    rows = ws.get_all_values()
+    if not rows:
+        return {}
+
+    header = rows[0]
+    try:
+        date_idx = header.index("取得日時")
+    except ValueError:
+        date_idx = 0
+    try:
+        channel_idx = header.index("チャンネルID")
+    except ValueError:
+        channel_idx = 1
+
+    latest_map: Dict[str, datetime] = {}
+    for row in rows[1:]:
+        channel_id = row[channel_idx].strip() if len(row) > channel_idx else ""
+        if not channel_id:
+            continue
+        dt = parse_status_date(row[date_idx] if len(row) > date_idx else "")
+        if not dt:
+            continue
+        prev = latest_map.get(channel_id)
+        if prev is None or dt > prev:
+            latest_map[channel_id] = dt
+    return latest_map
+
+
+def sort_targets_by_staleness(targets: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    latest_map = get_latest_status_dates()
+
+    def sort_key(target: Dict[str, str]):
+        dt = latest_map.get(target["channel_id"])
+        if dt is None:
+            return (0, datetime.min)
+        return (1, dt)
+
+    return sorted(targets, key=sort_key)
 
 
 def append_rows(ws, rows: List[List]):
@@ -1275,6 +1360,58 @@ with tab_status:
                                 for key in STATUS_HEADER
                             ]
                         )
+
+        st.markdown("---")
+        st.markdown("#### 検索対象シートから古い順に一括更新")
+        st.caption("検索対象シートのA列（チャンネルID）を読み込み、Status の最終取得日時が古い順に追記します。")
+        batch_limit = st.number_input(
+            "今回更新する最大件数",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+            key="status_batch_limit",
+        )
+        batch_btn = st.button("検索対象シートを読み込み、古い順で Status に追記")
+
+        if batch_btn:
+            with st.spinner("検索対象を読み込み、順次ステータスを取得中..."):
+                targets = read_search_targets()
+                if not targets:
+                    st.warning("検索対象シートにチャンネルIDがありません。A列を確認してください。")
+                else:
+                    ordered_targets = sort_targets_by_staleness(targets)
+                    picked = ordered_targets[: int(batch_limit)]
+
+                    ws_status = get_status_worksheet()
+                    result_rows: List[List] = []
+                    ok_items: List[str] = []
+                    ng_items: List[str] = []
+                    progress = st.progress(0.0)
+
+                    for idx, target in enumerate(picked, start=1):
+                        channel_id = target["channel_id"]
+                        status = compute_channel_status(channel_id, api_key)
+                        if status:
+                            result_rows.append(build_status_row(status))
+                            title = status.get("channel_title") or target.get("channel_name") or ""
+                            ok_items.append(f"{channel_id} {title}".strip())
+                        else:
+                            ng_items.append(channel_id)
+                        progress.progress(idx / len(picked))
+
+                    if result_rows:
+                        append_rows(ws_status, result_rows)
+
+                    st.success(
+                        f"一括更新が完了しました（成功: {len(ok_items)}件 / 失敗: {len(ng_items)}件）。"
+                    )
+                    if ok_items:
+                        st.markdown("**成功したチャンネル**")
+                        st.write("\n".join(f"- {x}" for x in ok_items))
+                    if ng_items:
+                        st.markdown("**失敗したチャンネルID**")
+                        st.write("\n".join(f"- {x}" for x in ng_items))
 
 # ----------------------------
 # タブ3: チャンネルステータス解析（TXT/コピーのみ）
