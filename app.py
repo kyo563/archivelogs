@@ -43,6 +43,7 @@ RECORD_HEADER = [
     "duration_sec",    # 秒数
     "view_count",      # 再生数
     "like_count",      # 高評価数
+    "comment_count",   # コメント数
 ]
 
 # Status シートのヘッダー（日本語）
@@ -184,6 +185,12 @@ def get_record_worksheet():
     first_row = ws.row_values(1)
     if not first_row:
         ws.append_row(RECORD_HEADER)
+    elif len(first_row) < len(RECORD_HEADER):
+        # 既存ヘッダーは残しつつ、不足している末尾列のみ追加する
+        missing_headers = RECORD_HEADER[len(first_row):]
+        ws.update_cell(1, len(first_row) + 1, missing_headers[0])
+        for idx, header in enumerate(missing_headers[1:], start=len(first_row) + 2):
+            ws.update_cell(1, idx, header)
     return ws
 
 
@@ -484,6 +491,9 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
 
     view_count = int(stats.get("viewCount", 0) or 0)
     like_count = int(stats.get("likeCount", 0) or 0)
+    # commentCount は既存の videos.list 応答を利用する（追加API呼び出しはしない）
+    comment_count_raw = stats.get("commentCount")
+    comment_count = int(comment_count_raw) if comment_count_raw is not None else ""
 
     # タイトル（改行潰し）＋HYPERLINK
     title_raw = (snippet.get("title") or "").replace("\n", " ").strip()
@@ -499,6 +509,7 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
         duration_sec,
         view_count,
         like_count,
+        comment_count,
     ]
 
 
