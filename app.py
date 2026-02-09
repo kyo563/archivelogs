@@ -222,6 +222,16 @@ def append_rows(ws, rows: List[List]):
             ws.append_row(r, value_input_option="USER_ENTERED")
 
 
+def update_cells_in_column(ws, row_col_values: List[Tuple[int, int, str]]):
+    """指定セルをまとめて更新する。引数は (row, col, value) の配列。"""
+    if not row_col_values:
+        return
+    cells = [ws.cell(r, c) for r, c, _ in row_col_values]
+    for cell, (_, _, value) in zip(cells, row_col_values):
+        cell.value = value
+    ws.update_cells(cells, value_input_option="USER_ENTERED")
+
+
 # ====================================
 # 共通ユーティリティ
 # ====================================
@@ -313,6 +323,21 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
         return s
 
     return None
+
+
+def extract_video_id_from_title_cell(title_cell: str) -> Optional[str]:
+    """record シートの title 列から videoId を抽出する。"""
+    text = (title_cell or "").strip()
+    if not text:
+        return None
+
+    # HYPERLINK("https://www.youtube.com/watch?v=...", "...")
+    m = re.search(r"watch\?v=([a-zA-Z0-9_-]{11})", text)
+    if m:
+        return m.group(1)
+
+    # 万一 URL / videoId がそのまま入っているケースにも対応
+    return resolve_video_id(text)
 
 
 # ====================================
@@ -511,6 +536,61 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
         like_count,
         comment_count,
     ]
+
+
+def fetch_comment_counts(video_ids: List[str], api_key: str) -> Dict[str, str]:
+    """videos.list(part=statistics) だけでコメント数をまとめて取得する。"""
+    youtube = get_youtube_client(api_key)
+    result: Dict[str, str] = {}
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i + 50]
+        try:
+            add_quota_usage("videos.list")
+            resp = youtube.videos().list(
+                part="statistics",
+                id=",".join(chunk),
+                maxResults=len(chunk),
+            ).execute()
+        except Exception as e:
+            st.warning(f"コメント数の取得に失敗しました: {e}")
+            continue
+
+        for item in resp.get("items", []):
+            vid = item.get("id")
+            stats = item.get("statistics", {}) or {}
+            raw = stats.get("commentCount")
+            if vid:
+                result[vid] = str(raw) if raw is not None else ""
+    return result
+
+
+def refresh_record_comment_counts(ws, api_key: str) -> int:
+    """record シート H 列をコメント数で更新し、更新件数を返す。"""
+    rows = ws.get_all_values()
+    if len(rows) <= 1:
+        return 0
+
+    targets: List[Tuple[int, str]] = []
+    for row_idx, row in enumerate(rows[1:], start=2):
+        title_cell = row[2] if len(row) >= 3 else ""
+        video_id = extract_video_id_from_title_cell(title_cell)
+        if video_id:
+            targets.append((row_idx, video_id))
+
+    if not targets:
+        return 0
+
+    unique_video_ids = list(dict.fromkeys([vid for _, vid in targets]))
+    counts = fetch_comment_counts(unique_video_ids, api_key)
+
+    updates: List[Tuple[int, int, str]] = []
+    for row_idx, video_id in targets:
+        if video_id in counts:
+            comment_value = counts[video_id]
+            updates.append((row_idx, 8, comment_value))  # H列
+
+    update_cells_in_column(ws, updates)
+    return len(updates)
 
 
 # ====================================
@@ -1088,11 +1168,20 @@ with tab_logs:
         channel_input = st.text_input("チャンネルURL / ID（直近50件を取得）", "")
         video_input = st.text_input("動画URL / ID（任意・1件だけ取得）", "")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             run_recent_btn = st.button("直近50件を Record に追記")
         with col2:
             run_single_btn = st.button("この動画だけ Record に追記")
+        with col3:
+            refresh_comments_btn = st.button("Record のコメント数を更新（H列）")
+
+
+        if refresh_comments_btn:
+            ws_record = get_record_worksheet()
+            with st.spinner("Record のコメント数を更新中..."):
+                updated_count = refresh_record_comment_counts(ws_record, api_key)
+            st.success(f"{updated_count}件のコメント数を H 列に反映しました。")
 
         # 直近50件（チャンネル）
         if run_recent_btn:
