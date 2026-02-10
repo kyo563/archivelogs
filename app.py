@@ -290,6 +290,70 @@ def get_latest_status_dates() -> Dict[str, datetime]:
     return latest_map
 
 
+def get_latest_channel_titles_from_status() -> Dict[str, str]:
+    """Status シートの履歴から channel_id ごとの最新チャンネル名を作る。"""
+    ws = get_status_worksheet()
+    rows = ws.get_all_values()
+    if not rows:
+        return {}
+
+    header = rows[0]
+    try:
+        date_idx = header.index("取得日時")
+    except ValueError:
+        date_idx = 0
+    try:
+        channel_idx = header.index("チャンネルID")
+    except ValueError:
+        channel_idx = 1
+    try:
+        title_idx = header.index("チャンネル名")
+    except ValueError:
+        title_idx = 2
+
+    latest_map: Dict[str, Tuple[datetime, str]] = {}
+    for row in rows[1:]:
+        channel_id = row[channel_idx].strip() if len(row) > channel_idx else ""
+        channel_title = row[title_idx].strip() if len(row) > title_idx else ""
+        if not channel_id or not channel_title:
+            continue
+        dt = parse_status_date(row[date_idx] if len(row) > date_idx else "")
+        if not dt:
+            dt = datetime.min
+
+        prev = latest_map.get(channel_id)
+        if prev is None or dt > prev[0]:
+            latest_map[channel_id] = (dt, channel_title)
+
+    return {k: v[1] for k, v in latest_map.items()}
+
+
+def fill_missing_channel_names_on_search_target() -> int:
+    """検索対象シートで A列にIDがあり B列が空の行だけを、Statusの既存名で補完する。"""
+    ws = get_search_target_worksheet()
+    rows = ws.get_all_values()
+    if len(rows) <= 1:
+        return 0
+
+    titles_map = get_latest_channel_titles_from_status()
+    if not titles_map:
+        return 0
+
+    updates: List[Tuple[int, int, str]] = []
+    for idx, row in enumerate(rows[1:], start=2):
+        channel_id = row[0].strip() if len(row) >= 1 else ""
+        channel_name = row[1].strip() if len(row) >= 2 else ""
+        if not channel_id or channel_name:
+            continue
+
+        title = titles_map.get(channel_id, "")
+        if title:
+            updates.append((idx, 2, title))
+
+    update_cells_in_column(ws, updates)
+    return len(updates)
+
+
 def sort_targets_by_staleness(targets: List[Dict[str, str]]) -> List[Dict[str, str]]:
     latest_map = get_latest_status_dates()
 
@@ -1424,6 +1488,9 @@ with tab_status:
 
         if batch_btn:
             with st.spinner("検索対象を読み込み、順次ステータスを取得中..."):
+                filled_count = fill_missing_channel_names_on_search_target()
+                if filled_count:
+                    st.info(f"検索対象シートのチャンネル名を {filled_count} 件補完しました（Statusシートの既存データを利用）。")
                 targets = read_search_targets()
                 if not targets:
                     st.warning("検索対象シートにチャンネルIDがありません。A列を確認してください。")
