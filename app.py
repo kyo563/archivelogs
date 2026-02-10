@@ -1416,7 +1416,7 @@ with tab_status:
             "今回更新する最大件数",
             min_value=1,
             max_value=100,
-            value=5,
+            value=30,
             step=1,
             key="status_batch_limit",
         )
