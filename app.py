@@ -426,8 +426,11 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
         return s
 
     # https://www.youtube.com/channel/UC... 形式
+    # クエリ付きURL（...?feature=shared など）でも正しく抽出する
     if "channel/" in s:
-        return s.split("channel/")[1].split("/")[0]
+        m = re.search(r"channel/(UC[a-zA-Z0-9_-]{22})", s)
+        if m:
+            return m.group(1)
 
     youtube = get_youtube_client(api_key)
     try:
@@ -467,11 +470,13 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
 
     # youtu.be
     if "youtu.be/" in s:
-        return s.split("youtu.be/")[1].split("?")[0].split("/")[0]
+        vid = s.split("youtu.be/")[1].split("?")[0].split("/")[0]
+        return vid if len(vid) == 11 else None
 
     # shorts
     if "youtube.com/shorts/" in s:
-        return s.split("shorts/")[1].split("?")[0].split("/")[0]
+        vid = s.split("shorts/")[1].split("?")[0].split("/")[0]
+        return vid if len(vid) == 11 else None
 
     # 素の videoId
     if len(s) == 11 and "/" not in s and " " not in s:
