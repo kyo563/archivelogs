@@ -1328,13 +1328,11 @@ with tab_logs:
         channel_input = st.text_input("チャンネルURL / ID（直近50件を取得）", "")
         video_input = st.text_input("動画URL / ID（任意・1件だけ取得）", "")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             run_recent_btn = st.button("直近50件を Record に追記")
         with col2:
             run_single_btn = st.button("この動画だけ Record に追記")
-        with col3:
-            refresh_comments_btn = st.button("Record のコメント数を更新（H列）")
 
         routine_btn = st.button("ルーティン")
 
@@ -1357,6 +1355,7 @@ with tab_logs:
                     ]
                     append_rows(ws_record, record_rows)
                     record_count = len(record_rows)
+                    refresh_record_comment_counts(ws_record, api_key)
 
                 status_rows: List[List] = []
                 failed_status_ids: List[str] = []
@@ -1378,12 +1377,6 @@ with tab_logs:
                     "Status 取得に失敗したチャンネルID: "
                     + ", ".join(failed_status_ids)
                 )
-
-        if refresh_comments_btn:
-            ws_record = get_record_worksheet()
-            with st.spinner("Record のコメント数を更新中..."):
-                updated_count = refresh_record_comment_counts(ws_record, api_key)
-            st.success(f"{updated_count}件のコメント数を H 列に反映しました。")
 
         # 直近50件（チャンネル）
         if run_recent_btn:
@@ -1409,7 +1402,10 @@ with tab_logs:
                             for it in items
                         ]
                         append_rows(ws_record, rows)
-                        st.success(f"{len(rows)}件の動画ログを Record シートに追記しました。")
+                        updated_count = refresh_record_comment_counts(ws_record, api_key)
+                        st.success(
+                            f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                        )
 
         # 単一動画
         if run_single_btn:
@@ -1430,7 +1426,10 @@ with tab_logs:
                         logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                         row = build_record_row_from_video_item(item, logged_at_str)
                         append_rows(ws_record, [row])
-                        st.success("1件の動画ログを Record シートに追記しました。")
+                        updated_count = refresh_record_comment_counts(ws_record, api_key)
+                        st.success(
+                            f"1件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                        )
 
 # ----------------------------
 # タブ2: チャンネルステータス（Status）
