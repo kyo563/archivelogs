@@ -366,15 +366,15 @@ def sort_targets_by_staleness(targets: List[Dict[str, str]]) -> List[Dict[str, s
     return sorted(targets, key=sort_key)
 
 
-def append_rows(ws, rows: List[List]):
+def append_rows(ws, rows: List[List], value_input_option: str = "USER_ENTERED"):
     if not rows:
         return
     try:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        ws.append_rows(rows, value_input_option=value_input_option)
     except AttributeError:
         # 古い gspread 互換
         for r in rows:
-            ws.append_row(r, value_input_option="USER_ENTERED")
+            ws.append_row(r, value_input_option=value_input_option)
 
 
 def update_cells_in_column(ws, row_col_values: List[Tuple[int, int, str]]):
@@ -1368,7 +1368,7 @@ with tab_logs:
                         failed_status_ids.append(channel_id)
 
                 if status_rows:
-                    append_rows(ws_status, status_rows)
+                    append_rows(ws_status, status_rows, value_input_option="RAW")
 
             st.success(
                 f"ルーティン完了: Record {record_count}件 / Status {len(status_rows)}件を追記しました。"
@@ -1461,7 +1461,7 @@ with tab_status:
                     else:
                         status_row = build_status_row(status)
                         ws_status = get_status_worksheet()
-                        append_rows(ws_status, [status_row])
+                        append_rows(ws_status, [status_row], value_input_option="RAW")
 
                         st.success("Status シートにチャンネルステータスを1行追記しました。")
                         st.write(f"チャンネル名: {status['channel_title']}")
@@ -1521,7 +1521,7 @@ with tab_status:
                         progress.progress(idx / len(picked))
 
                     if result_rows:
-                        append_rows(ws_status, result_rows)
+                        append_rows(ws_status, result_rows, value_input_option="RAW")
 
                     st.success(
                         f"一括更新が完了しました（成功: {len(ok_items)}件 / 失敗: {len(ng_items)}件）。"
