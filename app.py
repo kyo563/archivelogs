@@ -853,7 +853,7 @@ def search_video_ids_published_after(
             if not next_page:
                 break
     except Exception as e:
-        st.warning(f"期間内動画の検索に失敗しました: {e}")
+        st.warning(f"指定した期間の動画を探せませんでした。検索条件を確認して、もう一度お試しください。詳細: {e}")
 
     return video_ids
 
