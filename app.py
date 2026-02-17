@@ -49,13 +49,13 @@ RECORD_HEADER = [
 
 # Status シートのヘッダー（日本語）
 STATUS_HEADER = [
-    "取得日時",                  # logged_at（JST, yyyy/mm/dd）
+    "取得日時",                  # logged_at（JST, yyyy/mm/dd hh:mm）
     "チャンネルID",              # channel_id
     "チャンネル名",              # channel_title
     "登録者数",                  # subscriber_count
     "動画本数",                  # video_count
     "総再生回数",                # view_count
-    "チャンネル開設日",          # channel_published_at（JST, yyyy/mm/dd）
+    "チャンネル開設日",          # channel_published_at（JST, yyyy/mm/dd hh:mm）
     "活動月数",                  # months_active
     "累計登録者数/活動月",       # subs_per_month
     "累計登録者数/動画",         # subs_per_video
@@ -252,7 +252,7 @@ def parse_status_date(date_str: str) -> Optional[datetime]:
     text = (date_str or "").strip()
     if not text:
         return None
-    for fmt in ("%Y/%m/%d", "%Y/%m/%d %H:%M:%S"):
+    for fmt in ("%Y/%m/%d", "%Y/%m/%d %H:%M", "%Y/%m/%d %H:%M:%S"):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -901,7 +901,7 @@ def compute_channel_status(channel_id: str, api_key: str) -> Optional[Dict]:
         return None
 
     now_jst = datetime.now(JST)
-    data_date_str = now_jst.strftime("%Y/%m/%d")
+    data_date_str = now_jst.strftime("%Y/%m/%d %H:%M")
 
     # チャンネル開設日・活動月数
     published_at_raw = basic.get("publishedAt")
@@ -921,7 +921,7 @@ def compute_channel_status(channel_id: str, api_key: str) -> Optional[Dict]:
         ).days
         months_active = round(days_active / 30, 2)
         published_dt_jst = published_dt.astimezone(JST)
-        channel_published_str = published_dt_jst.strftime("%Y/%m/%d")
+        channel_published_str = published_dt_jst.strftime("%Y/%m/%d %H:%M")
 
     subs = basic.get("subscriberCount", 0)
     vids_total = basic.get("videoCount", 0)
@@ -1367,7 +1367,7 @@ with tab_logs:
                         failed_status_ids.append(channel_id)
 
                 if status_rows:
-                    append_rows(ws_status, status_rows, value_input_option="RAW")
+                    append_rows(ws_status, status_rows)
 
             st.success(
                 f"ルーティン完了: Record {record_count}件 / Status {len(status_rows)}件を追記しました。"
@@ -1460,7 +1460,7 @@ with tab_status:
                     else:
                         status_row = build_status_row(status)
                         ws_status = get_status_worksheet()
-                        append_rows(ws_status, [status_row], value_input_option="RAW")
+                        append_rows(ws_status, [status_row])
 
                         st.success("Status シートにチャンネルステータスを1行追記しました。")
                         st.write(f"チャンネル名: {status['channel_title']}")
@@ -1520,7 +1520,7 @@ with tab_status:
                         progress.progress(idx / len(picked))
 
                     if result_rows:
-                        append_rows(ws_status, result_rows, value_input_option="RAW")
+                        append_rows(ws_status, result_rows)
 
                     st.success(
                         f"一括更新が完了しました（成功: {len(ok_items)}件 / 失敗: {len(ng_items)}件）。"
