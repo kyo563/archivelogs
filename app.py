@@ -49,13 +49,13 @@ RECORD_HEADER = [
 
 # Status シートのヘッダー（日本語）
 STATUS_HEADER = [
-    "取得日時",                  # logged_at（JST, yyyy/mm/dd hh:mm）
+    "取得日時",                  # logged_at（JST, yyyy/mm/dd）
     "チャンネルID",              # channel_id
     "チャンネル名",              # channel_title
     "登録者数",                  # subscriber_count
     "動画本数",                  # video_count
     "総再生回数",                # view_count
-    "チャンネル開設日",          # channel_published_at（JST, yyyy/mm/dd hh:mm）
+    "チャンネル開設日",          # channel_published_at（JST, yyyy/mm/dd）
     "活動月数",                  # months_active
     "累計登録者数/活動月",       # subs_per_month
     "累計登録者数/動画",         # subs_per_video
@@ -901,7 +901,7 @@ def compute_channel_status(channel_id: str, api_key: str) -> Optional[Dict]:
         return None
 
     now_jst = datetime.now(JST)
-    data_date_str = now_jst.strftime("%Y/%m/%d %H:%M")
+    data_date_str = now_jst.strftime("%Y/%m/%d")
 
     # チャンネル開設日・活動月数
     published_at_raw = basic.get("publishedAt")
@@ -921,7 +921,7 @@ def compute_channel_status(channel_id: str, api_key: str) -> Optional[Dict]:
         ).days
         months_active = round(days_active / 30, 2)
         published_dt_jst = published_dt.astimezone(JST)
-        channel_published_str = published_dt_jst.strftime("%Y/%m/%d %H:%M")
+        channel_published_str = published_dt_jst.strftime("%Y/%m/%d")
 
     subs = basic.get("subscriberCount", 0)
     vids_total = basic.get("videoCount", 0)
