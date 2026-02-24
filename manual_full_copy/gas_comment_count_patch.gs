@@ -870,37 +870,75 @@ function dedupeStatusSheet() {
       return s.substring(0, 10);
     }
 
-    const seen = {};
-    const keptRev = [];
-    let deleted = 0;
+    const groupBest = {};
+    const removeByError = {};
+    const removeByDuplicate = {};
 
-    for (let i = numRows - 1; i >= 0; i--) {
+    let deletedByError = 0;
+    let deletedByDuplicate = 0;
+
+    function toNumber_(v) {
+      if (v === null || v === '' || v === undefined) return NaN;
+      if (typeof v === 'number') return v;
+      const n = Number(String(v).replace(/,/g, '').trim());
+      return isNaN(n) ? NaN : n;
+    }
+
+    function hasZeroInColsIToM_(row) {
+      // row は A列始まりの配列。I〜M は index 8〜12。
+      if (row.length <= 8) return false;
+      const end = Math.min(12, row.length - 1);
+      for (let col = 8; col <= end; col++) {
+        const n = toNumber_(row[col]);
+        if (!isNaN(n) && n === 0) return true;
+      }
+      return false;
+    }
+
+    for (let i = 0; i < values.length; i++) {
       const row = values[i];
-      const loggedAt = row[0];
-      const channelId = row[1];
 
-      const dateStr = normalizeDate(loggedAt);
-      if (!dateStr || !channelId) {
-        keptRev.push(row);
+      if (hasZeroInColsIToM_(row)) {
+        removeByError[i] = true;
+        deletedByError++;
         continue;
       }
 
-      const statusPart = JSON.stringify(row.slice(1)); // B..last
-      const key = dateStr + '||' + statusPart;
+      const loggedAt = row[0];
+      const channelId = normalizeChannelId_(row[1]);
+      const dateStr = normalizeDate(loggedAt);
 
-      if (seen[key]) deleted++;
-      else {
-        seen[key] = true;
-        keptRev.push(row);
+      if (!dateStr || !channelId) continue;
+
+      const key = dateStr + '||' + channelId;
+      const t = toDate_(loggedAt);
+      const ts = t ? t.getTime() : Number.MAX_SAFE_INTEGER;
+      const prev = groupBest[key];
+
+      if (!prev || ts < prev.ts || (ts === prev.ts && i < prev.index)) {
+        if (prev) removeByDuplicate[prev.index] = true;
+        groupBest[key] = { index: i, ts: ts };
+        if (prev) {
+          deletedByDuplicate++;
+          delete removeByDuplicate[i];
+        }
+      } else {
+        removeByDuplicate[i] = true;
+        deletedByDuplicate++;
       }
     }
 
-    if (deleted === 0) {
-      SpreadsheetApp.getUi().alert('Status シートに削除対象となる重複行はありませんでした。');
-      return;
+    const kept = [];
+    for (let i = 0; i < values.length; i++) {
+      if (removeByError[i] || removeByDuplicate[i]) continue;
+      kept.push(values[i]);
     }
 
-    const kept = keptRev.reverse();
+    const deleted = deletedByError + deletedByDuplicate;
+    if (deleted === 0) {
+      SpreadsheetApp.getUi().alert('Status シートに削除対象行はありませんでした。');
+      return;
+    }
 
     range.clearContent();
     if (kept.length > 0) {
@@ -909,11 +947,12 @@ function dedupeStatusSheet() {
 
     SpreadsheetApp.getUi().alert(
       'Status シートの重複削除が完了しました。\n' +
-      '削除行数: ' + deleted + '\n' +
+      '削除行数(合計): ' + deleted + '\n' +
+      '  ・同一日付×同一チャンネルの重複: ' + deletedByDuplicate + '\n' +
+      '  ・I〜M列に0を含む行: ' + deletedByError + '\n' +
       '判定条件:\n' +
-      '  ・同一カレンダー日（取得日時）\n' +
-      '  ・同一チャンネルID\n' +
-      '  ・その日のステータス内容が完全一致\n' +
+      '  ・同一日付（時刻は無視）×同一チャンネルIDで最古時刻を1行だけ残す\n' +
+      '  ・I〜M列に0を含む行は削除\n' +
       '補足:\n' +
       '  ・速度優先のため deleteRow は使わず、一括書き戻しに変更しています。'
     );
