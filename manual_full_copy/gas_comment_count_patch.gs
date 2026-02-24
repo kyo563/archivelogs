@@ -411,6 +411,7 @@ function compressRecordAndUpdateSummary() {
     const formulas = formulaRange.getFormulas();
 
     const byVideo = {};
+    const passthroughRows = [];
 
     for (let i = 0; i < numRows; i++) {
       const row = values[i];
@@ -427,7 +428,20 @@ function compressRecordAndUpdateSummary() {
       const titleCell = titleFormula || titleValue;
 
       const videoId = extractVideoIdFromText_(titleFormula || titleValue);
-      if (!videoId) continue;
+      if (!videoId) {
+        // video_id を判定できない行は圧縮対象外として、そのまま残す
+        passthroughRows.push([
+          loggedAt || '',
+          type || '',
+          titleCell || '',
+          publishedAt || '',
+          durationSec || '',
+          viewCount,
+          likeCount,
+          commentCount
+        ]);
+        continue;
+      }
 
       const loggedAtDate =
         loggedAt instanceof Date ? loggedAt :
@@ -542,6 +556,11 @@ function compressRecordAndUpdateSummary() {
       if (!db) return -1;
       return da - db;
     });
+
+    // 手動貼り付けなどで video_id 抽出不可だった行を末尾に残す
+    if (passthroughRows.length > 0) {
+      compressedAllRows.push.apply(compressedAllRows, passthroughRows);
+    }
 
     safeToast_(ss, 'record を書き戻し中です…', 'ログツール', 10);
 
