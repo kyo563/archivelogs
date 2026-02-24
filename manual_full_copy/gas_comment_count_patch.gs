@@ -383,240 +383,320 @@ function classifySpeedRank_(avgPerDay, medianSpeed) {
   return '鈍足';
 }
 
+
+/**
+ * エラーログシートを取得します（無ければ作成）。
+ */
+function ensureErrorLogSheet_(ss) {
+  const name = 'error_log';
+  let sheet = ss.getSheetByName(name);
+  const header = ['timestamp', 'function_name', 'stage', 'message', 'stack', 'meta_json'];
+
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.getRange(1, 1, 1, header.length).setValues([header]);
+    setBordersForUsedRange_(sheet);
+    return sheet;
+  }
+
+  const firstRow = sheet.getRange(1, 1, 1, header.length).getValues()[0];
+  let needsHeader = false;
+  for (let i = 0; i < header.length; i++) {
+    if (String(firstRow[i] || '') !== header[i]) {
+      needsHeader = true;
+      break;
+    }
+  }
+
+  if (needsHeader) {
+    sheet.insertRows(1, 1);
+    sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  }
+
+  return sheet;
+}
+
+/**
+ * エラーログを1行追記します（失敗しても処理を落としません）。
+ */
+function appendErrorLog_(ss, functionName, stage, err, meta) {
+  try {
+    const sheet = ensureErrorLogSheet_(ss);
+    const message = err && err.message ? err.message : String(err || 'unknown error');
+    const stack = err && err.stack ? String(err.stack) : '';
+    const metaJson = meta ? JSON.stringify(meta) : '';
+    sheet.appendRow([new Date(), functionName || '', stage || '', message, stack, metaJson]);
+  } catch (loggingErr) {}
+}
+
+/**
+ * record 行データの様式を統一します。
+ */
+function normalizeRecordRows_(values, formulas) {
+  const normalized = [];
+  let filledTitle = 0;
+  let filledType = 0;
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i] || [];
+    const titleFormula = formulas[i] && formulas[i][0] ? formulas[i][0] : '';
+
+    const loggedAt = row[0] || '';
+
+    let type = row[1] != null ? String(row[1]).trim().toLowerCase() : '';
+    if (type !== 'video' && type !== 'live' && type !== 'short') {
+      type = 'video';
+      filledType++;
+    }
+
+    const titleValue = row[2] != null ? String(row[2]).trim() : '';
+    const titleCell = titleFormula || titleValue;
+    const safeTitle = titleCell || '（タイトル未設定）';
+    if (!titleCell) filledTitle++;
+
+    const publishedAt = row[3] || '';
+    const durationSec = row[4] || '';
+    const viewCount = Number(row[5]) || 0;
+    const likeCount = Number(row[6]) || 0;
+    const commentCount = Number(row[7]) || 0;
+
+    normalized.push([loggedAt, type, safeTitle, publishedAt, durationSec, viewCount, likeCount, commentCount]);
+  }
+
+  return {
+    rows: normalized,
+    stats: { total: normalized.length, filledTitle: filledTitle, filledType: filledType }
+  };
+}
+
 /**
  * record を圧縮しつつ summary を更新
  */
 function compressRecordAndUpdateSummary() {
   return runWithDocLock_(function() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    safeToast_(ss, 'record を読み込み中です…', 'ログツール', 10);
 
-    const recordSheet = ss.getSheetByName('record');
-    if (!recordSheet) {
-      SpreadsheetApp.getUi().alert('record シートが見つかりません。');
-      return;
-    }
+    try {
+      safeToast_(ss, 'record を読み込み中です…', 'ログツール', 10);
 
-    const lastRow = recordSheet.getLastRow();
-    const lastCol = recordSheet.getLastColumn();
-    if (lastRow < 2) {
-      SpreadsheetApp.getUi().alert('record シートにデータがありません（ヘッダーのみ）です。');
-      return;
-    }
-
-    const numRows = lastRow - 1;
-    const valueRange = recordSheet.getRange(2, 1, numRows, lastCol);
-    const values = valueRange.getValues();
-    const formulaRange = recordSheet.getRange(2, 3, numRows, 1);
-    const formulas = formulaRange.getFormulas();
-
-    const byVideo = {};
-    const passthroughRows = [];
-
-    for (let i = 0; i < numRows; i++) {
-      const row = values[i];
-      const loggedAt = row[0];
-      const type = row[1];
-      const titleValue = row[2];
-      const publishedAt = row[3];
-      const durationSec = row[4];
-      const viewCount = Number(row[5]) || 0;
-      const likeCount = Number(row[6]) || 0;
-      const commentCount = Number(row[7]) || 0;
-
-      const titleFormula = formulas[i][0];
-      const titleCell = titleFormula || titleValue;
-
-      const videoId = extractVideoIdFromText_(titleFormula || titleValue);
-      if (!videoId) {
-        // video_id を判定できない行は圧縮対象外として、そのまま残す
-        passthroughRows.push([
-          loggedAt || '',
-          type || '',
-          titleCell || '',
-          publishedAt || '',
-          durationSec || '',
-          viewCount,
-          likeCount,
-          commentCount
-        ]);
-        continue;
+      const recordSheet = ss.getSheetByName('record');
+      if (!recordSheet) {
+        SpreadsheetApp.getUi().alert('record シートが見つかりません。');
+        return;
       }
 
-      const loggedAtDate =
-        loggedAt instanceof Date ? loggedAt :
-        (loggedAt ? new Date(loggedAt) : null);
-
-      const publishedAtDate =
-        publishedAt instanceof Date ? publishedAt :
-        (publishedAt ? new Date(publishedAt) : null);
-
-      if (!byVideo[videoId]) byVideo[videoId] = [];
-      byVideo[videoId].push({
-        loggedAt: loggedAtDate,
-        type: type,
-        titleCell: titleCell,
-        publishedAt: publishedAtDate,
-        durationSec: durationSec,
-        viewCount: viewCount,
-        likeCount: likeCount,
-        commentCount: commentCount
-      });
-    }
-
-    safeToast_(ss, 'record を圧縮中です…', 'ログツール', 10);
-
-    const compressedAllRows = [];
-    const summaryRows = [];
-    const timeZone = 'Asia/Tokyo';
-
-    Object.keys(byVideo).forEach(function(videoId) {
-      const logs = byVideo[videoId];
-      logs.sort(function(a, b) {
-        if (!a.loggedAt && !b.loggedAt) return 0;
-        if (!a.loggedAt) return 1;
-        if (!b.loggedAt) return -1;
-        return a.loggedAt - b.loggedAt;
-      });
-
-      if (logs.length === 0) return;
-
-      const kept = [];
-      const base = logs[0];
-      kept.push(base);
-
-      let prevView = base.viewCount || 0;
-      let prevLike = base.likeCount || 0;
-      let prevComment = base.commentCount || 0;
-
-      for (let i = 1; i < logs.length; i++) {
-        const cur = logs[i];
-        const curView = cur.viewCount || 0;
-        const curLike = cur.likeCount || 0;
-        const curComment = cur.commentCount || 0;
-
-        if (curView === prevView && curLike === prevLike && curComment === prevComment) continue;
-
-        kept.push(cur);
-        prevView = curView;
-        prevLike = curLike;
-        prevComment = curComment;
+      const lastRow = recordSheet.getLastRow();
+      const lastCol = recordSheet.getLastColumn();
+      if (lastRow < 2) {
+        SpreadsheetApp.getUi().alert('record シートにデータがありません（ヘッダーのみ）です。');
+        return;
       }
 
-      kept.forEach(function(k) {
-        compressedAllRows.push([
-          k.loggedAt || '',
-          k.type || '',
-          k.titleCell || '',
-          k.publishedAt || '',
-          k.durationSec || '',
-          k.viewCount || 0,
-          k.likeCount || 0,
-          k.commentCount || 0
-        ]);
-      });
+      const numRows = lastRow - 1;
+      const values = recordSheet.getRange(2, 1, numRows, lastCol).getValues();
+      const formulas = recordSheet.getRange(2, 3, numRows, 1).getFormulas();
 
-      const noteParts = [];
-      kept.forEach(function(k) {
-        if (k.loggedAt) {
-          const dateStr = Utilities.formatDate(k.loggedAt, timeZone, 'yyyy/MM/dd');
-          const v = k.viewCount || 0;
-          const l = k.likeCount || 0;
-          const c = k.commentCount || 0;
-          noteParts.push(dateStr + ':' + v + '/' + l + '/' + c);
+      // 圧縮前に全行の様式を統一
+      const normalizedResult = normalizeRecordRows_(values, formulas);
+      const normalizedRows = normalizedResult.rows;
+      const normalizedStats = normalizedResult.stats;
+
+      const byVideo = {};
+      const passthroughRows = [];
+
+      for (let i = 0; i < normalizedRows.length; i++) {
+        const row = normalizedRows[i];
+        const loggedAt = row[0];
+        const type = row[1];
+        const titleCell = row[2];
+        const publishedAt = row[3];
+        const durationSec = row[4];
+        const viewCount = Number(row[5]) || 0;
+        const likeCount = Number(row[6]) || 0;
+        const commentCount = Number(row[7]) || 0;
+
+        const videoId = extractVideoIdFromText_(titleCell);
+        if (!videoId) {
+          passthroughRows.push([
+            loggedAt || '',
+            type || '',
+            titleCell || '',
+            publishedAt || '',
+            durationSec || '',
+            viewCount,
+            likeCount,
+            commentCount
+          ]);
+          continue;
         }
+
+        const loggedAtDate = loggedAt instanceof Date ? loggedAt : (loggedAt ? new Date(loggedAt) : null);
+        const publishedAtDate = publishedAt instanceof Date ? publishedAt : (publishedAt ? new Date(publishedAt) : null);
+
+        if (!byVideo[videoId]) byVideo[videoId] = [];
+        byVideo[videoId].push({
+          loggedAt: loggedAtDate,
+          type: type,
+          titleCell: titleCell,
+          publishedAt: publishedAtDate,
+          durationSec: durationSec,
+          viewCount: viewCount,
+          likeCount: likeCount,
+          commentCount: commentCount
+        });
+      }
+
+      safeToast_(ss, 'record を圧縮中です…', 'ログツール', 10);
+
+      const compressedAllRows = [];
+      const summaryRows = [];
+      const timeZone = 'Asia/Tokyo';
+
+      Object.keys(byVideo).forEach(function(videoId) {
+        const logs = byVideo[videoId];
+        logs.sort(function(a, b) {
+          if (!a.loggedAt && !b.loggedAt) return 0;
+          if (!a.loggedAt) return 1;
+          if (!b.loggedAt) return -1;
+          return a.loggedAt - b.loggedAt;
+        });
+
+        if (logs.length === 0) return;
+
+        const kept = [];
+        const base = logs[0];
+        kept.push(base);
+
+        let prevView = base.viewCount || 0;
+        let prevLike = base.likeCount || 0;
+        let prevComment = base.commentCount || 0;
+
+        for (let i = 1; i < logs.length; i++) {
+          const cur = logs[i];
+          const curView = cur.viewCount || 0;
+          const curLike = cur.likeCount || 0;
+          const curComment = cur.commentCount || 0;
+
+          if (curView === prevView && curLike === prevLike && curComment === prevComment) continue;
+
+          kept.push(cur);
+          prevView = curView;
+          prevLike = curLike;
+          prevComment = curComment;
+        }
+
+        kept.forEach(function(k) {
+          compressedAllRows.push([
+            k.loggedAt || '',
+            k.type || '',
+            k.titleCell || '',
+            k.publishedAt || '',
+            k.durationSec || '',
+            k.viewCount || 0,
+            k.likeCount || 0,
+            k.commentCount || 0
+          ]);
+        });
+
+        const noteParts = [];
+        kept.forEach(function(k) {
+          if (k.loggedAt) {
+            const dateStr = Utilities.formatDate(k.loggedAt, timeZone, 'yyyy/MM/dd');
+            const v = k.viewCount || 0;
+            const l = k.likeCount || 0;
+            const c = k.commentCount || 0;
+            noteParts.push(dateStr + ':' + v + '/' + l + '/' + c);
+          }
+        });
+
+        const first = kept[0];
+        const last = kept[kept.length - 1];
+
+        summaryRows.push([
+          videoId,
+          last.type || '',
+          last.titleCell || '',
+          first.publishedAt || '',
+          first.durationSec || '',
+          first.loggedAt || '',
+          first.viewCount || 0,
+          first.likeCount || 0,
+          first.commentCount || 0,
+          last.loggedAt || '',
+          last.viewCount || 0,
+          last.likeCount || 0,
+          last.commentCount || 0,
+          noteParts.join(' | ')
+        ]);
       });
 
-      const first = kept[0];
-      const last = kept[kept.length - 1];
+      compressedAllRows.sort(function(a, b) {
+        const da = a[0] instanceof Date ? a[0] : (a[0] ? new Date(a[0]) : null);
+        const db = b[0] instanceof Date ? b[0] : (b[0] ? new Date(b[0]) : null);
+        if (!da && !db) return 0;
+        if (!da) return 1;
+        if (!db) return -1;
+        return da - db;
+      });
 
-      summaryRows.push([
-        videoId,
-        last.type || '',
-        last.titleCell || '',
-        first.publishedAt || '',
-        first.durationSec || '',
-        first.loggedAt || '',
-        first.viewCount || 0,
-        first.likeCount || 0,
-        first.commentCount || 0,
-        last.loggedAt || '',
-        last.viewCount || 0,
-        last.likeCount || 0,
-        last.commentCount || 0,
-        noteParts.join(' | ')
-      ]);
-    });
+      if (passthroughRows.length > 0) {
+        compressedAllRows.push.apply(compressedAllRows, passthroughRows);
+      }
 
-    compressedAllRows.sort(function(a, b) {
-      const da = a[0] instanceof Date ? a[0] : (a[0] ? new Date(a[0]) : null);
-      const db = b[0] instanceof Date ? b[0] : (b[0] ? new Date(b[0]) : null);
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      return da - db;
-    });
+      safeToast_(ss, 'record を書き戻し中です…', 'ログツール', 10);
 
-    // 手動貼り付けなどで video_id 抽出不可だった行を末尾に残す
-    if (passthroughRows.length > 0) {
-      compressedAllRows.push.apply(compressedAllRows, passthroughRows);
+      recordSheet.getRange(2, 1, numRows, lastCol).clearContent();
+      if (compressedAllRows.length > 0) {
+        recordSheet.getRange(2, 1, compressedAllRows.length, 8).setValues(compressedAllRows);
+      }
+      setBordersForUsedRange_(recordSheet);
+
+      const summaryName = 'summary';
+      let summarySheet = ss.getSheetByName(summaryName);
+      if (!summarySheet) summarySheet = ss.insertSheet(summaryName);
+
+      const sd = summarySheet.getDataRange();
+      sd.clearContent();
+      sd.clearFormat();
+
+      const header = [
+        'video_id', 'type', 'title', 'published_at', 'duration_sec',
+        'first_logged_at', 'first_view_count', 'first_like_count', 'first_comment_count',
+        'last_logged_at', 'last_view_count', 'last_like_count', 'last_comment_count', 'note'
+      ];
+      summarySheet.getRange(1, 1, 1, header.length).setValues([header]);
+
+      summaryRows.sort(function(a, b) {
+        return (b[10] || 0) - (a[10] || 0);
+      });
+
+      if (summaryRows.length > 0) {
+        summarySheet.getRange(2, 1, summaryRows.length, header.length).setValues(summaryRows);
+      }
+
+      setBordersForUsedRange_(summarySheet);
+      safeToast_(ss, '完了しました。', 'ログツール', 3);
+
+      SpreadsheetApp.getUi().alert(
+        'record の圧縮と summary の更新が完了しました。\n' +
+        'record の行数（ヘッダー除く）: ' + compressedAllRows.length + '\n' +
+        'summary の動画数: ' + summaryRows.length + '\n' +
+        '様式統一: type補完 ' + normalizedStats.filledType + ' 件 / title補完 ' + normalizedStats.filledTitle + ' 件'
+      );
+    } catch (err) {
+      appendErrorLog_(ss, 'compressRecordAndUpdateSummary', 'main', err, {
+        spreadsheetId: ss.getId(),
+        activeSheet: ss.getActiveSheet() ? ss.getActiveSheet().getName() : ''
+      });
+      SpreadsheetApp.getUi().alert(
+        'record 圧縮＋summary 更新でエラーが発生しました。error_log シートを確認してください。\n' +
+        (err && err.message ? err.message : String(err))
+      );
+      throw err;
     }
-
-    safeToast_(ss, 'record を書き戻し中です…', 'ログツール', 10);
-
-    recordSheet.getRange(2, 1, numRows, lastCol).clearContent();
-
-    if (compressedAllRows.length > 0) {
-      recordSheet.getRange(2, 1, compressedAllRows.length, 8).setValues(compressedAllRows);
-    }
-
-    setBordersForUsedRange_(recordSheet);
-
-    const summaryName = 'summary';
-    let summarySheet = ss.getSheetByName(summaryName);
-    if (!summarySheet) summarySheet = ss.insertSheet(summaryName);
-
-    const sd = summarySheet.getDataRange();
-    sd.clearContent();
-    sd.clearFormat();
-
-    const header = [
-      'video_id',
-      'type',
-      'title',
-      'published_at',
-      'duration_sec',
-      'first_logged_at',
-      'first_view_count',
-      'first_like_count',
-      'first_comment_count',
-      'last_logged_at',
-      'last_view_count',
-      'last_like_count',
-      'last_comment_count',
-      'note'
-    ];
-    summarySheet.getRange(1, 1, 1, header.length).setValues([header]);
-
-    summaryRows.sort(function(a, b) {
-      return (b[10] || 0) - (a[10] || 0);
-    });
-
-    if (summaryRows.length > 0) {
-      summarySheet.getRange(2, 1, summaryRows.length, header.length).setValues(summaryRows);
-    }
-
-    setBordersForUsedRange_(summarySheet);
-
-    safeToast_(ss, '完了しました。', 'ログツール', 3);
-
-    SpreadsheetApp.getUi().alert(
-      'record の圧縮と summary の更新が完了しました。\n' +
-      'record の行数（ヘッダー除く）: ' + compressedAllRows.length + '\n' +
-      'summary の動画数: ' + summaryRows.length
-    );
   });
 }
+
 
 /**
  * summary シートで選択中の動画について、record から履歴テーブルを作成
