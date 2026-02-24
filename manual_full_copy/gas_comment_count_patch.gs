@@ -685,21 +685,22 @@ function compressRecordAndUpdateSummary() {
 
         const first = kept[0];
         const last = kept[kept.length - 1];
+        const latest = logs[logs.length - 1];
 
         summaryRows.push([
           videoId,
-          last.type || '',
-          last.titleCell || '',
+          latest.type || last.type || '',
+          latest.titleCell || last.titleCell || '',
           first.publishedAt || '',
           first.durationSec || '',
           first.loggedAt || '',
           first.viewCount || 0,
           first.likeCount || 0,
           first.commentCount || 0,
-          last.loggedAt || '',
-          last.viewCount || 0,
-          last.likeCount || 0,
-          last.commentCount || 0,
+          latest.loggedAt || last.loggedAt || '',
+          latest.viewCount || last.viewCount || 0,
+          latest.likeCount || last.likeCount || 0,
+          latest.commentCount || last.commentCount || 0,
           noteParts.join(' | ')
         ]);
       });
