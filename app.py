@@ -432,7 +432,30 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
         if m:
             return m.group(1)
 
+    # @handle（チャンネルユーザー名）
+    handle: Optional[str] = None
+    if s.startswith("@"):
+        handle = s[1:].split("/")[0].strip()
+    else:
+        m = re.search(r"youtube\.com/@([a-zA-Z0-9._-]+)", s)
+        if m:
+            handle = m.group(1)
+
     youtube = get_youtube_client(api_key)
+    if handle:
+        try:
+            add_quota_usage("channels.list")
+            resp = youtube.channels().list(
+                part="id",
+                forHandle=handle,
+                maxResults=1,
+            ).execute()
+            items = resp.get("items", [])
+            if items:
+                return items[0].get("id")
+        except Exception:
+            pass
+
     try:
         add_quota_usage("search.list")
         resp = youtube.search().list(
@@ -483,6 +506,29 @@ def resolve_video_id(url_or_id: str) -> Optional[str]:
         return s
 
     return None
+
+
+def determine_record_input_mode(url_or_id: str) -> Optional[str]:
+    """
+    Record 入力の判定。
+    - channel: チャンネルURL / チャンネルID / @handle
+    - video: 動画URL / 動画ID
+    """
+    s = (url_or_id or "").strip()
+    if not s:
+        return None
+
+    if s.startswith("UC") and len(s) == 24:
+        return "channel"
+    if s.startswith("@"):
+        return "channel"
+    if "youtube.com/channel/" in s or "youtube.com/@" in s:
+        return "channel"
+
+    if resolve_video_id(s):
+        return "video"
+
+    return "channel"
 
 
 def extract_video_id_from_title_cell(title_cell: str) -> Optional[str]:
@@ -1325,14 +1371,13 @@ with tab_logs:
     if not api_key:
         st.info("サイドバーから YouTube API Key を入力してください。")
     else:
-        channel_input = st.text_input("チャンネルURL / ID（直近50件を取得）", "")
-        video_input = st.text_input("動画URL / ID（任意・1件だけ取得）", "")
+        record_input = st.text_input(
+            "チャンネルURL / ID / @ユーザー名 / 動画URL を入力",
+            "",
+            help="チャンネル入力なら直近50件、動画入力なら1件のみ取得します。",
+        )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            run_recent_btn = st.button("直近50件を Record に追記")
-        with col2:
-            run_single_btn = st.button("この動画だけ Record に追記")
+        run_record_btn = st.button("入力内容から Record に追記")
 
         routine_btn = st.button("ルーティン")
 
@@ -1378,58 +1423,54 @@ with tab_logs:
                     + ", ".join(failed_status_ids)
                 )
 
-        # 直近50件（チャンネル）
-        if run_recent_btn:
+        if run_record_btn:
             ws_record = get_record_worksheet()
-            if not channel_input.strip():
-                st.error("チャンネルURL / ID を入力してください。")
+            if not record_input.strip():
+                st.error("チャンネルURL / ID / @ユーザー名 / 動画URL を入力してください。")
             else:
-                channel_id = resolve_channel_id_simple(channel_input, api_key)
-                if not channel_id:
-                    st.error("チャンネルIDを解決できませんでした。")
+                input_mode = determine_record_input_mode(record_input)
+
+                if input_mode == "video":
+                    vid = resolve_video_id(record_input)
+                    if not vid:
+                        st.error("動画IDを解決できませんでした。URLを確認してください。")
+                    else:
+                        with st.spinner("動画情報を取得中..."):
+                            item = fetch_single_video_item(vid, api_key)
+                        if not item:
+                            st.error("指定した動画が取得できませんでした（非公開・処理中・ライブ中などの可能性）。")
+                        else:
+                            now_jst = datetime.now(JST)
+                            logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
+                            row = build_record_row_from_video_item(item, logged_at_str)
+                            append_rows(ws_record, [row])
+                            updated_count = refresh_record_comment_counts(ws_record, api_key)
+                            st.success(
+                                f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                            )
                 else:
                     with st.spinner("直近50件を取得中..."):
+                        channel_id = resolve_channel_id_simple(record_input, api_key)
+                    if not channel_id:
+                        st.error("チャンネルIDを解決できませんでした。入力内容を確認してください。")
+                    else:
                         items = fetch_channel_upload_items(
                             channel_id, max_results=50, api_key=api_key
                         )
-                    if not items:
-                        st.warning("取得できる動画がありませんでした。")
-                    else:
-                        now_jst = datetime.now(JST)
-                        logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                        rows = [
-                            build_record_row_from_video_item(it, logged_at_str)
-                            for it in items
-                        ]
-                        append_rows(ws_record, rows)
-                        updated_count = refresh_record_comment_counts(ws_record, api_key)
-                        st.success(
-                            f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
-                        )
-
-        # 単一動画
-        if run_single_btn:
-            ws_record = get_record_worksheet()
-            if not video_input.strip():
-                st.error("動画URL / ID を入力してください。")
-            else:
-                vid = resolve_video_id(video_input)
-                if not vid:
-                    st.error("動画IDを解決できませんでした。URL / ID を確認してください。")
-                else:
-                    with st.spinner("動画情報を取得中..."):
-                        item = fetch_single_video_item(vid, api_key)
-                    if not item:
-                        st.error("指定した動画が取得できませんでした（非公開・処理中・ライブ中などの可能性）。")
-                    else:
-                        now_jst = datetime.now(JST)
-                        logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                        row = build_record_row_from_video_item(item, logged_at_str)
-                        append_rows(ws_record, [row])
-                        updated_count = refresh_record_comment_counts(ws_record, api_key)
-                        st.success(
-                            f"1件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
-                        )
+                        if not items:
+                            st.warning("取得できる動画がありませんでした。")
+                        else:
+                            now_jst = datetime.now(JST)
+                            logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
+                            rows = [
+                                build_record_row_from_video_item(it, logged_at_str)
+                                for it in items
+                            ]
+                            append_rows(ws_record, rows)
+                            updated_count = refresh_record_comment_counts(ws_record, api_key)
+                            st.success(
+                                f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                            )
 
 # ----------------------------
 # タブ2: チャンネルステータス（Status）
