@@ -2,16 +2,25 @@
  * path: investigation/gas_comment_count_patch.gs
  *
  * 目的:
- * - 手動貼り付けで C列(HYPERLINK)が崩れた行が、
- *   compressRecordAndUpdateSummary 実行時に消える問題を防ぐ。
- *
- * 制約:
- * - シート列構成は変更しない。
- * - 行の新規挿入・並び替えはしない。
+ * - 手動貼り付け等で C列(HYPERLINK) が崩れた行のリンクを、同一 video_id の既存式から自己修復する。
+ * - compressRecordAndUpdateSummary 実行時に video_id 抽出失敗行を捨てず保持し、行消失を防ぐ。
+ * - 書き戻し時に C列の式が落ちないよう values/formulas を分離して再設定する。
  *
  * 反映方法:
  * - 既存 code.gs の同名関数を下記内容で置き換える。
  */
+
+/**
+ * HYPERLINK 文字列を解析し、{url, label} を返す。
+ * 解析失敗時は null。
+ */
+function parseHyperlinkFormula_(formulaText) {
+  if (!formulaText) return null;
+  const s = String(formulaText).trim();
+  const m = s.match(/^\s*=?\s*HYPERLINK\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)\s*$/i);
+  if (!m) return null;
+  return { url: m[1], label: m[2] };
+}
 
 /**
  * C列の値/数式から video_id を抽出する。
@@ -22,8 +31,8 @@ function extractVideoIdFromText_(text) {
   const s = String(text).trim();
   if (!s) return '';
 
-  // HYPERLINK("https://www.youtube.com/watch?v=VIDEO_ID", "title")
-  let m = s.match(/watch\?v=([A-Za-z0-9_-]{11})/i);
+  // watch?v=VIDEO_ID
+  let m = s.match(/[?&]v=([A-Za-z0-9_-]{11})/i);
   if (m) return m[1];
 
   // youtu.be/VIDEO_ID
@@ -31,10 +40,10 @@ function extractVideoIdFromText_(text) {
   if (m) return m[1];
 
   // shorts/VIDEO_ID
-  m = s.match(/shorts\/([A-Za-z0-9_-]{11})/i);
+  m = s.match(/\/shorts\/([A-Za-z0-9_-]{11})/i);
   if (m) return m[1];
 
-  // 生の11桁IDのみ貼られたケース
+  // 生の11文字ID
   m = s.match(/^[A-Za-z0-9_-]{11}$/);
   if (m) return m[0];
 
@@ -42,10 +51,60 @@ function extractVideoIdFromText_(text) {
 }
 
 /**
- * 既存の圧縮処理への最小パッチ。
+ * 同一 video_id の既存 HYPERLINK 式を参照して、C列リンク崩れを自己修復する。
+ *
+ * @param {Array<Array<any>>} values 2行目以降の値
+ * @param {Array<Array<string>>} formulas 2行目以降の数式
+ * @returns {number} 修復件数
+ */
+function repairRecordHyperlinksFromSameVideo_(values, formulas) {
+  const knownByVideoId = new Map();
+
+  // 1st pass: 正常な HYPERLINK 式を video_id -> 式 として収集
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const fRow = formulas[i];
+    const f = fRow[2]; // C列
+    const parsed = parseHyperlinkFormula_(f);
+    if (!parsed) continue;
+
+    const videoId = extractVideoIdFromText_(parsed.url);
+    if (!videoId) continue;
+
+    if (!knownByVideoId.has(videoId)) {
+      knownByVideoId.set(videoId, f);
+    }
+  }
+
+  // 2nd pass: C列式が壊れている行を復元
+  let repaired = 0;
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const fRow = formulas[i];
+
+    const currentFormula = fRow[2] || '';
+    if (parseHyperlinkFormula_(currentFormula)) continue; // 既に正常
+
+    const videoId = extractVideoIdFromText_(currentFormula || row[2]);
+    if (!videoId) continue;
+
+    const backupFormula = knownByVideoId.get(videoId);
+    if (!backupFormula) continue;
+
+    fRow[2] = backupFormula;
+    repaired++;
+  }
+
+  return repaired;
+}
+
+/**
+ * record 圧縮 + summary 更新。
+ *
  * ポイント:
- * - video_id が取れない行を continue で捨てない。
- * - 非解析行は「そのまま保持」して再書き込み対象に含める。
+ * - 先頭で C列リンク自己修復を実施。
+ * - video_id 抽出不能行は破棄せず保持。
+ * - 書き戻しは values + formulas を再設定し、C列式消失を防ぐ。
  */
 function compressRecordAndUpdateSummary() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -60,30 +119,34 @@ function compressRecordAndUpdateSummary() {
   const values = recordSheet.getRange(2, 1, numRows, lastCol).getValues();
   const formulas = recordSheet.getRange(2, 1, numRows, lastCol).getFormulas();
 
-  // 既存ロジック互換: 動画ごとに集約
+  // 1) 圧縮前の自己修復
+  const repairedCount = repairRecordHyperlinksFromSameVideo_(values, formulas);
+  if (repairedCount > 0) {
+    Logger.log('[INFO] C列リンク自己修復: ' + repairedCount + ' 件');
+  }
+
+  // 2) 動画ごとに集約（解析不能行は退避）
   const byVideo = new Map();
-  const unparseableRows = []; // ここが今回の追加: 解析不可行の退避
+  const unparseableRows = [];
 
   for (let i = 0; i < numRows; i++) {
     const row = values[i];
     const fRow = formulas[i];
 
-    const titleFormula = fRow[2]; // C列
-    const titleValue = row[2];
-    const videoId = extractVideoIdFromText_(titleFormula || titleValue);
+    const cFormula = fRow[2];
+    const cValue = row[2];
+    const videoId = extractVideoIdFromText_(cFormula || cValue);
 
     if (!videoId) {
-      // 以前: continue で消えていた
-      // 変更後: 行をそのまま保持して書き戻す
-      unparseableRows.push(row.slice(0, 8));
+      unparseableRows.push({ values: row.slice(), formulas: fRow.slice() });
       continue;
     }
 
     if (!byVideo.has(videoId)) byVideo.set(videoId, []);
-    byVideo.get(videoId).push(row);
+    byVideo.get(videoId).push({ values: row, formulas: fRow });
   }
 
-  // 既存仕様: 各動画内で連続同値ログを圧縮
+  // 3) 各動画内で view/like/comment が連続同値の行を圧縮
   const compressedRows = [];
   for (const [, rows] of byVideo) {
     let prevView = null;
@@ -91,7 +154,8 @@ function compressRecordAndUpdateSummary() {
     let prevComment = null;
 
     for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
+      const obj = rows[i];
+      const r = obj.values;
       const curView = r[3];
       const curLike = r[4];
       const curComment = r[5];
@@ -100,23 +164,28 @@ function compressRecordAndUpdateSummary() {
         continue;
       }
 
-      compressedRows.push(r.slice(0, 8));
+      compressedRows.push({ values: obj.values.slice(), formulas: obj.formulas.slice() });
       prevView = curView;
       prevLike = curLike;
       prevComment = curComment;
     }
   }
 
-  // 非解析行を必ず残す（末尾に付与。既存データ欠損防止を優先）
-  const compressedAllRows = compressedRows.concat(unparseableRows);
+  // 非解析行も必ず保持
+  const outputRows = compressedRows.concat(unparseableRows);
 
-  // 書き戻し
+  // 4) 書き戻し（値 + 数式）
   recordSheet.getRange(2, 1, numRows, lastCol).clearContent();
-  if (compressedAllRows.length > 0) {
-    recordSheet.getRange(2, 1, compressedAllRows.length, 8).setValues(compressedAllRows);
+
+  if (outputRows.length > 0) {
+    const outValues = outputRows.map(function(x) { return x.values; });
+    const outFormulas = outputRows.map(function(x) { return x.formulas; });
+
+    const writeRange = recordSheet.getRange(2, 1, outputRows.length, lastCol);
+    writeRange.setValues(outValues);
+    writeRange.setFormulas(outFormulas);
   }
 
-  // 抽出失敗を見える化（任意。邪魔なら Logger のみに変更可）
   if (unparseableRows.length > 0) {
     Logger.log('[WARN] video_id 抽出失敗行: ' + unparseableRows.length + ' 件（行は削除せず保持）');
   }
