@@ -424,19 +424,23 @@ def parse_iso8601_duration(duration: str) -> int:
     if not duration:
         return 0
     pattern = re.compile(
-        r"^PT"
+        r"^P"
+        r"(?:(\d+)D)?"
+        r"(?:T"
         r"(?:(\d+)H)?"
         r"(?:(\d+)M)?"
         r"(?:(\d+)S)?"
+        r")?"
         r"$"
     )
     m = pattern.match(duration)
     if not m:
         return 0
-    hours = int(m.group(1) or 0)
-    minutes = int(m.group(2) or 0)
-    seconds = int(m.group(3) or 0)
-    return hours * 3600 + minutes * 60 + seconds
+    days = int(m.group(1) or 0)
+    hours = int(m.group(2) or 0)
+    minutes = int(m.group(3) or 0)
+    seconds = int(m.group(4) or 0)
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
