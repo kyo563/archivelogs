@@ -34,26 +34,26 @@ function runWithDocLock_(fn, waitMs) {
     return;
   }
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let filterSnapshots = [];
+  let filterSheetNames = [];
 
   try {
     if (ss) {
-      filterSnapshots = captureAndClearAllSheetFilters_(ss);
+      filterSheetNames = captureAndClearAllSheetFilters_(ss);
     }
     return fn();
   } finally {
-    if (ss && filterSnapshots.length > 0) {
-      restoreAllSheetFilters_(ss, filterSnapshots);
+    if (ss && filterSheetNames.length > 0) {
+      restoreAllSheetFilters_(ss, filterSheetNames);
     }
     try { lock.releaseLock(); } catch (e) {}
   }
 }
 
 /**
- * ブック内の全シートについて、現在のフィルタ状態を退避して解除します。
+ * ブック内の全シートについて、現在フィルタがあるシート名を控えて解除します。
  */
 function captureAndClearAllSheetFilters_(ss) {
-  const snapshots = [];
+  const sheetNames = [];
   const sheets = ss.getSheets();
 
   for (let i = 0; i < sheets.length; i++) {
@@ -61,55 +61,30 @@ function captureAndClearAllSheetFilters_(ss) {
     const filter = sheet.getFilter();
     if (!filter) continue;
 
-    const range = filter.getRange();
-    const numCols = range.getNumColumns();
-    const criteriaByColumn = {};
-
-    for (let col = 1; col <= numCols; col++) {
-      const criteria = filter.getColumnFilterCriteria(col);
-      if (criteria) {
-        criteriaByColumn[col] = criteria;
-      }
-    }
-
-    snapshots.push({
-      sheetName: sheet.getName(),
-      row: range.getRow(),
-      column: range.getColumn(),
-      numRows: range.getNumRows(),
-      numColumns: numCols,
-      criteriaByColumn: criteriaByColumn
-    });
-
+    sheetNames.push(sheet.getName());
     filter.remove();
   }
 
-  return snapshots;
+  return sheetNames;
 }
 
 /**
- * 退避したフィルタ状態を復元します（失敗しても処理は継続）。
+ * 処理完了時に、控えておいたシートへフィルタを作り直します（失敗しても継続）。
  */
-function restoreAllSheetFilters_(ss, snapshots) {
-  for (let i = 0; i < snapshots.length; i++) {
-    const s = snapshots[i];
-    const sheet = ss.getSheetByName(s.sheetName);
+function restoreAllSheetFilters_(ss, sheetNames) {
+  for (let i = 0; i < sheetNames.length; i++) {
+    const sheet = ss.getSheetByName(sheetNames[i]);
     if (!sheet) continue;
 
     try {
       const existing = sheet.getFilter();
       if (existing) existing.remove();
 
-      const range = sheet.getRange(s.row, s.column, s.numRows, s.numColumns);
-      const filter = range.createFilter();
+      const lastRow = sheet.getLastRow();
+      const lastCol = sheet.getLastColumn();
+      if (lastRow < 1 || lastCol < 1) continue;
 
-      const cols = Object.keys(s.criteriaByColumn);
-      for (let j = 0; j < cols.length; j++) {
-        const col = Number(cols[j]);
-        const criteria = s.criteriaByColumn[col];
-        if (!criteria) continue;
-        filter.setColumnFilterCriteria(col, criteria);
-      }
+      sheet.getRange(1, 1, lastRow, lastCol).createFilter();
     } catch (e) {}
   }
 }
