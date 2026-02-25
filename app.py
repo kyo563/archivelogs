@@ -7,6 +7,7 @@
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
@@ -16,6 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.errors import StreamlitSecretNotFoundError
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
 
 # ====================================
@@ -413,6 +415,26 @@ def update_cells_in_column(ws, row_col_values: List[Tuple[int, int, str]]):
     ws.update_cells(cells, value_input_option="USER_ENTERED")
 
 
+def is_retryable_youtube_error(err: Exception) -> bool:
+    """YouTube API の一時的な失敗かどうかを判定する。"""
+    if isinstance(err, HttpError) and err.resp is not None:
+        return err.resp.status in (429, 500, 502, 503, 504)
+    return isinstance(err, (TimeoutError, OSError))
+
+
+def execute_youtube_request(endpoint: str, request_builder, retries: int = 3):
+    """一時的な API エラーをリトライしながら request を実行する。"""
+    for attempt in range(retries):
+        try:
+            add_quota_usage(endpoint)
+            return request_builder().execute()
+        except Exception as err:
+            last_try = attempt == retries - 1
+            if last_try or not is_retryable_youtube_error(err):
+                raise
+            time.sleep(1.2 * (attempt + 1))
+
+
 # ====================================
 # 共通ユーティリティ
 # ====================================
@@ -474,12 +496,14 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
     youtube = get_youtube_client(api_key)
     if handle:
         try:
-            add_quota_usage("channels.list")
-            resp = youtube.channels().list(
-                part="id",
-                forHandle=handle,
-                maxResults=1,
-            ).execute()
+            resp = execute_youtube_request(
+                "channels.list",
+                lambda: youtube.channels().list(
+                    part="id",
+                    forHandle=handle,
+                    maxResults=1,
+                ),
+            )
             items = resp.get("items", [])
             if items:
                 return items[0].get("id")
@@ -487,13 +511,15 @@ def resolve_channel_id_simple(url_or_id: str, api_key: str) -> Optional[str]:
             pass
 
     try:
-        add_quota_usage("search.list")
-        resp = youtube.search().list(
-            q=s,
-            type="channel",
-            part="id,snippet",
-            maxResults=3,
-        ).execute()
+        resp = execute_youtube_request(
+            "search.list",
+            lambda: youtube.search().list(
+                q=s,
+                type="channel",
+                part="id,snippet",
+                maxResults=3,
+            ),
+        )
         items = resp.get("items", [])
         if not items:
             return None
@@ -591,12 +617,14 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
 
     # uploads プレイリストID取得
     try:
-        add_quota_usage("channels.list")
-        ch_resp = youtube.channels().list(
-            part="contentDetails",
-            id=channel_id,
-            maxResults=1,
-        ).execute()
+        ch_resp = execute_youtube_request(
+            "channels.list",
+            lambda: youtube.channels().list(
+                part="contentDetails",
+                id=channel_id,
+                maxResults=1,
+            ),
+        )
         items = ch_resp.get("items", [])
         if not items:
             st.warning("チャンネルのアップロード情報が取得できませんでした。")
@@ -622,13 +650,15 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
             remaining = max_results - len(video_ids)
             if remaining <= 0:
                 break
-            add_quota_usage("playlistItems.list")
-            pl_resp = youtube.playlistItems().list(
-                part="contentDetails",
-                playlistId=uploads_playlist_id,
-                maxResults=min(50, remaining),
-                pageToken=next_page,
-            ).execute()
+            pl_resp = execute_youtube_request(
+                "playlistItems.list",
+                lambda: youtube.playlistItems().list(
+                    part="contentDetails",
+                    playlistId=uploads_playlist_id,
+                    maxResults=min(50, remaining),
+                    pageToken=next_page,
+                ),
+            )
             for it in pl_resp.get("items", []):
                 cd = it.get("contentDetails", {}) or {}
                 vid = cd.get("videoId")
@@ -646,12 +676,14 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
 
     # video 本体
     try:
-        add_quota_usage("videos.list")
-        v_resp = youtube.videos().list(
-            part="snippet,contentDetails,statistics,status,liveStreamingDetails",
-            id=",".join(video_ids),
-            maxResults=max_results,
-        ).execute()
+        v_resp = execute_youtube_request(
+            "videos.list",
+            lambda: youtube.videos().list(
+                part="snippet,contentDetails,statistics,status,liveStreamingDetails",
+                id=",".join(video_ids),
+                maxResults=max_results,
+            ),
+        )
     except Exception as e:
         st.warning(f"動画情報の取得に失敗しました: {e}")
         return []
@@ -687,12 +719,14 @@ def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
     """
     youtube = get_youtube_client(api_key)
     try:
-        add_quota_usage("videos.list")
-        resp = youtube.videos().list(
-            part="snippet,contentDetails,statistics,status,liveStreamingDetails",
-            id=video_id,
-            maxResults=1,
-        ).execute()
+        resp = execute_youtube_request(
+            "videos.list",
+            lambda: youtube.videos().list(
+                part="snippet,contentDetails,statistics,status,liveStreamingDetails",
+                id=video_id,
+                maxResults=1,
+            ),
+        )
     except Exception as e:
         st.warning(f"動画情報の取得に失敗しました: {e}")
         return None
@@ -781,12 +815,14 @@ def fetch_comment_counts(video_ids: List[str], api_key: str) -> Dict[str, str]:
     for i in range(0, len(video_ids), 50):
         chunk = video_ids[i:i + 50]
         try:
-            add_quota_usage("videos.list")
-            resp = youtube.videos().list(
-                part="statistics",
-                id=",".join(chunk),
-                maxResults=len(chunk),
-            ).execute()
+            resp = execute_youtube_request(
+                "videos.list",
+                lambda: youtube.videos().list(
+                    part="statistics",
+                    id=",".join(chunk),
+                    maxResults=len(chunk),
+                ),
+            )
         except Exception as e:
             st.warning(f"コメント数の取得に失敗しました: {e}")
             continue
@@ -836,12 +872,14 @@ def refresh_record_comment_counts(ws, api_key: str) -> int:
 def get_channel_basic(channel_id: str, api_key: str) -> Optional[Dict]:
     youtube = get_youtube_client(api_key)
     try:
-        add_quota_usage("channels.list")
-        resp = youtube.channels().list(
-            part="snippet,statistics,contentDetails",
-            id=channel_id,
-            maxResults=1,
-        ).execute()
+        resp = execute_youtube_request(
+            "channels.list",
+            lambda: youtube.channels().list(
+                part="snippet,statistics,contentDetails",
+                id=channel_id,
+                maxResults=1,
+            ),
+        )
     except Exception:
         return None
 
@@ -872,13 +910,15 @@ def get_playlists_meta(channel_id: str, api_key: str) -> List[Dict]:
 
     try:
         while True:
-            add_quota_usage("playlists.list")
-            resp = youtube.playlists().list(
-                part="snippet,contentDetails",
-                channelId=channel_id,
-                maxResults=50,
-                pageToken=next_page,
-            ).execute()
+            resp = execute_youtube_request(
+                "playlists.list",
+                lambda: youtube.playlists().list(
+                    part="snippet,contentDetails",
+                    channelId=channel_id,
+                    maxResults=50,
+                    pageToken=next_page,
+                ),
+            )
             for pl in resp.get("items", []):
                 pls.append(
                     {
@@ -911,16 +951,18 @@ def search_video_ids_published_after(
     next_page: Optional[str] = None
     try:
         while True:
-            add_quota_usage("search.list")
-            resp = youtube.search().list(
-                part="id",
-                channelId=channel_id,
-                publishedAfter=published_after,
-                type="video",
-                maxResults=50,
-                order="date",  # 期間内の取りこぼしを避けるため公開日の降順で取得
-                pageToken=next_page,
-            ).execute()
+            resp = execute_youtube_request(
+                "search.list",
+                lambda: youtube.search().list(
+                    part="id",
+                    channelId=channel_id,
+                    publishedAfter=published_after,
+                    type="video",
+                    maxResults=50,
+                    order="date",  # 期間内の取りこぼしを避けるため公開日の降順で取得
+                    pageToken=next_page,
+                ),
+            )
             for item in resp.get("items", []):
                 vid = item.get("id", {}).get("videoId")
                 if vid:
@@ -944,12 +986,14 @@ def get_videos_stats(video_ids: Tuple[str, ...], api_key: str) -> Dict[str, Dict
     for i in range(0, len(video_ids), 50):
         chunk = video_ids[i: i + 50]
         try:
-            add_quota_usage("videos.list")
-            resp = youtube.videos().list(
-                part="snippet,statistics",
-                id=",".join(chunk),
-                maxResults=50,
-            ).execute()
+            resp = execute_youtube_request(
+                "videos.list",
+                lambda: youtube.videos().list(
+                    part="snippet,statistics",
+                    id=",".join(chunk),
+                    maxResults=50,
+                ),
+            )
             for it in resp.get("items", []):
                 vid = it.get("id")
                 if not vid:
