@@ -27,5 +27,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check required secrets are set
+        run: |
+          test -n "${YOUTUBE_API_KEY}" && echo "YOUTUBE_API_KEY=present" || (echo "YOUTUBE_API_KEY=missing" && exit 1)
+          test -n "${SPREADSHEET_ID}" && echo "SPREADSHEET_ID=present" || (echo "SPREADSHEET_ID=missing" && exit 1)
+          test -n "${GCP_SERVICE_ACCOUNT_JSON}" && echo "GCP_SERVICE_ACCOUNT_JSON=present" || (echo "GCP_SERVICE_ACCOUNT_JSON=missing" && exit 1)
+
       - name: Run daily auto fetch
-        run: PYTHONPATH=. python scripts/run_daily_auto_fetch.py
+        run: python -m scripts.run_daily_auto_fetch
