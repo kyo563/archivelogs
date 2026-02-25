@@ -28,4 +28,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run daily auto fetch
-        run: python scripts/run_daily_auto_fetch.py
+        run: PYTHONPATH=. python scripts/run_daily_auto_fetch.py
