@@ -1,0 +1,31 @@
+name: Daily Auto Fetch
+
+on:
+  schedule:
+    - cron: '40 23 * * *' # JST 08:40
+  workflow_dispatch:
+
+jobs:
+  auto-fetch:
+    runs-on: ubuntu-latest
+    env:
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+      WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+      GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+      STATUS_BATCH_LIMIT: '30'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily auto fetch
+        run: python scripts/run_daily_auto_fetch.py

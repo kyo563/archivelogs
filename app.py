@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
@@ -27,13 +28,27 @@ JST = timezone(timedelta(hours=9))
 
 # スプレッドシート関連
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = st.secrets.get("SPREADSHEET_ID", None)
-RECORD_SHEET_NAME = st.secrets.get("WORKSHEET_NAME", "record")
 STATUS_SHEET_NAME = "Status"
 SEARCH_TARGET_SHEET_NAME = "検索対象"
 
-if SPREADSHEET_ID is None:
-    raise RuntimeError('st.secrets["SPREADSHEET_ID"] が設定されていません。')
+
+def get_secret_value(key: str, default=None):
+    """Streamlit secrets を優先し、無ければ環境変数を使う。"""
+    value = st.secrets.get(key, None)
+    if value is None:
+        value = os.environ.get(key, None)
+    return default if value is None else value
+
+
+def get_spreadsheet_id() -> str:
+    spreadsheet_id = get_secret_value("SPREADSHEET_ID")
+    if not spreadsheet_id:
+        raise RuntimeError('SPREADSHEET_ID が設定されていません。')
+    return spreadsheet_id
+
+
+def get_record_sheet_name() -> str:
+    return get_secret_value("WORKSHEET_NAME", "record")
 
 # record シートのヘッダー
 RECORD_HEADER = [
@@ -152,7 +167,7 @@ def get_api_key_from_ui() -> Optional[str]:
     secrets に YOUTUBE_API_KEY があればそれを使い、
     無ければサイドバーで手入力してもらう。
     """
-    key = st.secrets.get("YOUTUBE_API_KEY", None)
+    key = get_secret_value("YOUTUBE_API_KEY")
     if not key:
         key = st.sidebar.text_input("YouTube API Key (一時入力可)", type="password")
     return key
@@ -169,7 +184,11 @@ def get_youtube_client(api_key: str):
 def get_gspread_client():
     sa_info = st.secrets.get("gcp_service_account")
     if sa_info is None:
-        raise RuntimeError('st.secrets["gcp_service_account"] が設定されていません。')
+        sa_info_text = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+        if sa_info_text:
+            sa_info = json.loads(sa_info_text)
+    if sa_info is None:
+        raise RuntimeError('gcp_service_account / GCP_SERVICE_ACCOUNT_JSON が設定されていません。')
     creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
     return gspread.authorize(creds)
 
@@ -181,11 +200,11 @@ def get_gspread_client():
 @st.cache_resource
 def get_record_worksheet():
     client = get_gspread_client()
-    sh = client.open_by_key(SPREADSHEET_ID)
+    sh = client.open_by_key(get_spreadsheet_id())
     try:
-        ws = sh.worksheet(RECORD_SHEET_NAME)
+        ws = sh.worksheet(get_record_sheet_name())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=RECORD_SHEET_NAME, rows=1000, cols=20)
+        ws = sh.add_worksheet(title=get_record_sheet_name(), rows=1000, cols=20)
         ws.append_row(RECORD_HEADER)
         return ws
 
@@ -204,7 +223,7 @@ def get_record_worksheet():
 @st.cache_resource
 def get_status_worksheet():
     client = get_gspread_client()
-    sh = client.open_by_key(SPREADSHEET_ID)
+    sh = client.open_by_key(get_spreadsheet_id())
     try:
         ws = sh.worksheet(STATUS_SHEET_NAME)
     except gspread.WorksheetNotFound:
@@ -221,7 +240,7 @@ def get_status_worksheet():
 @st.cache_resource
 def get_search_target_worksheet():
     client = get_gspread_client()
-    sh = client.open_by_key(SPREADSHEET_ID)
+    sh = client.open_by_key(get_spreadsheet_id())
     try:
         ws = sh.worksheet(SEARCH_TARGET_SHEET_NAME)
     except gspread.WorksheetNotFound:
@@ -1318,343 +1337,439 @@ def build_status_numeric_text(status: Dict) -> str:
 
 
 # ====================================
+# 自動実行向け処理
+# ====================================
+
+def run_routine_job(api_key: str) -> Dict:
+    ws_record = get_record_worksheet()
+    ws_status = get_status_worksheet()
+
+    record_items = fetch_channel_upload_items(
+        ROUTINE_RECORD_CHANNEL_ID,
+        max_results=50,
+        api_key=api_key,
+    )
+
+    record_count = 0
+    if record_items:
+        logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
+        record_rows = [
+            build_record_row_from_video_item(it, logged_at_str)
+            for it in record_items
+        ]
+        append_rows(ws_record, record_rows)
+        record_count = len(record_rows)
+        refresh_record_comment_counts(ws_record, api_key)
+
+    status_rows: List[List] = []
+    failed_status_ids: List[str] = []
+    for channel_id in ROUTINE_STATUS_CHANNEL_IDS:
+        status = compute_channel_status(channel_id, api_key)
+        if status:
+            status_rows.append(build_status_row(status))
+        else:
+            failed_status_ids.append(channel_id)
+
+    if status_rows:
+        append_rows(ws_status, status_rows)
+
+    return {
+        "record_count": record_count,
+        "status_count": len(status_rows),
+        "failed_status_ids": failed_status_ids,
+    }
+
+
+def run_status_batch_job(api_key: str, batch_limit: int = 30) -> Dict:
+    filled_count = fill_missing_channel_names_on_search_target()
+    targets = read_search_targets()
+    if not targets:
+        return {
+            "filled_count": filled_count,
+            "picked_count": 0,
+            "ok_items": [],
+            "ng_items": [],
+        }
+
+    ordered_targets = sort_targets_by_staleness(targets)
+    picked = ordered_targets[: int(batch_limit)]
+
+    ws_status = get_status_worksheet()
+    result_rows: List[List] = []
+    ok_items: List[str] = []
+    ng_items: List[str] = []
+
+    for target in picked:
+        channel_id = target["channel_id"]
+        status = compute_channel_status(channel_id, api_key)
+        if status:
+            result_rows.append(build_status_row(status))
+            title = status.get("channel_title") or target.get("channel_name") or ""
+            ok_items.append(f"{channel_id} {title}".strip())
+        else:
+            ng_items.append(channel_id)
+
+    if result_rows:
+        append_rows(ws_status, result_rows)
+
+    return {
+        "filled_count": filled_count,
+        "picked_count": len(picked),
+        "ok_items": ok_items,
+        "ng_items": ng_items,
+    }
+
+
+def run_daily_auto_jobs(api_key: str, batch_limit: int = 30) -> Dict:
+    return {
+        "routine": run_routine_job(api_key),
+        "status_batch": run_status_batch_job(api_key, batch_limit=batch_limit),
+    }
+
+
+# ====================================
 # UI 本体
 # ====================================
 
-st.title("ログ収集ツール")
+def render_streamlit_app():
+    st.title("ログ収集ツール")
 
-# API キー入力はここで一度だけ
-api_key = get_api_key_from_ui()
+    # API キー入力はここで一度だけ
+    api_key = get_api_key_from_ui()
 
 
-def run_config_diagnostics(api_key: Optional[str]):
-    """APIキーとスプレッドシート接続の簡易チェックを行う。"""
+    def run_config_diagnostics(api_key: Optional[str]):
+        """APIキーとスプレッドシート接続の簡易チェックを行う。"""
 
-    with st.sidebar.expander("設定チェック", expanded=False):
-        st.write("YouTube API とスプレッドシート接続の動作確認を行います。")
-        if st.button("接続を検証", key="run_config_check"):
-            if not api_key:
-                st.error("YouTube API Key が未入力のため検証できません。")
-            else:
+        with st.sidebar.expander("設定チェック", expanded=False):
+            st.write("YouTube API とスプレッドシート接続の動作確認を行います。")
+            if st.button("接続を検証", key="run_config_check"):
+                if not api_key:
+                    st.error("YouTube API Key が未入力のため検証できません。")
+                else:
+                    try:
+                        yt = get_youtube_client(api_key)
+                        add_quota_usage("videos.list")
+                        yt.videos().list(
+                            part="id",
+                            id="dQw4w9WgXcQ",
+                            maxResults=1,
+                        ).execute()
+                        st.success("YouTube API に接続できました。")
+                    except Exception as e:  # APIキー無効や権限不足などを可視化
+                        st.error(f"YouTube API への接続に失敗しました: {e}")
+
                 try:
-                    yt = get_youtube_client(api_key)
-                    add_quota_usage("videos.list")
-                    yt.videos().list(
-                        part="id",
-                        id="dQw4w9WgXcQ",
-                        maxResults=1,
-                    ).execute()
-                    st.success("YouTube API に接続できました。")
-                except Exception as e:  # APIキー無効や権限不足などを可視化
-                    st.error(f"YouTube API への接続に失敗しました: {e}")
-
-            try:
-                spreadsheet = get_gspread_client().open_by_key(SPREADSHEET_ID)
-                st.success(f"スプレッドシート『{spreadsheet.title}』に接続できました。")
-            except Exception as e:
-                st.error(f"スプレッドシートへの接続に失敗しました: {e}")
+                    spreadsheet = get_gspread_client().open_by_key(get_spreadsheet_id())
+                    st.success(f"スプレッドシート『{spreadsheet.title}』に接続できました。")
+                except Exception as e:
+                    st.error(f"スプレッドシートへの接続に失敗しました: {e}")
 
 
-run_config_diagnostics(api_key)
+    run_config_diagnostics(api_key)
 
-tab_logs, tab_status, tab_status_txt = st.tabs(
-    ["ログ（Record）", "ステータス（Status）", "分析（TXT/コピー）"]
-)
+    tab_logs, tab_status, tab_status_txt = st.tabs(
+        ["ログ（Record）", "ステータス（Status）", "分析（TXT/コピー）"]
+    )
 
-# ----------------------------
-# タブ1: 動画ログ収集（record）
-# ----------------------------
-with tab_logs:
-    st.subheader("Recordシート")
-    render_quota_summary("Record")
+    # ----------------------------
+    # タブ1: 動画ログ収集（record）
+    # ----------------------------
+    with tab_logs:
+        st.subheader("Recordシート")
+        render_quota_summary("Record")
 
-    if not api_key:
-        st.info("サイドバーから YouTube API Key を入力してください。")
-    else:
-        record_input = st.text_input(
-            "チャンネルURL / ID / @ユーザー名 / 動画URL を入力",
-            "",
-            help="チャンネル入力なら直近50件、動画入力なら1件のみ取得します。",
-        )
-
-        run_record_btn = st.button("入力内容から Record に追記")
-
-        routine_btn = st.button("ルーティン")
-
-        if routine_btn:
-            ws_record = get_record_worksheet()
-            ws_status = get_status_worksheet()
-            with st.spinner("ルーティンを実行中..."):
-                record_items = fetch_channel_upload_items(
-                    ROUTINE_RECORD_CHANNEL_ID,
-                    max_results=50,
-                    api_key=api_key,
-                )
-
-                record_count = 0
-                if record_items:
-                    logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
-                    record_rows = [
-                        build_record_row_from_video_item(it, logged_at_str)
-                        for it in record_items
-                    ]
-                    append_rows(ws_record, record_rows)
-                    record_count = len(record_rows)
-                    refresh_record_comment_counts(ws_record, api_key)
-
-                status_rows: List[List] = []
-                failed_status_ids: List[str] = []
-                for channel_id in ROUTINE_STATUS_CHANNEL_IDS:
-                    status = compute_channel_status(channel_id, api_key)
-                    if status:
-                        status_rows.append(build_status_row(status))
-                    else:
-                        failed_status_ids.append(channel_id)
-
-                if status_rows:
-                    append_rows(ws_status, status_rows)
-
-            st.success(
-                f"ルーティン完了: Record {record_count}件 / Status {len(status_rows)}件を追記しました。"
+        if not api_key:
+            st.info("サイドバーから YouTube API Key を入力してください。")
+        else:
+            record_input = st.text_input(
+                "チャンネルURL / ID / @ユーザー名 / 動画URL を入力",
+                "",
+                help="チャンネル入力なら直近50件、動画入力なら1件のみ取得します。",
             )
-            if failed_status_ids:
-                st.warning(
-                    "Status 取得に失敗したチャンネルID: "
-                    + ", ".join(failed_status_ids)
-                )
 
-        if run_record_btn:
-            ws_record = get_record_worksheet()
-            if not record_input.strip():
-                st.error("チャンネルURL / ID / @ユーザー名 / 動画URL を入力してください。")
-            else:
-                input_mode = determine_record_input_mode(record_input)
+            run_record_btn = st.button("入力内容から Record に追記")
 
-                if input_mode == "video":
-                    vid = resolve_video_id(record_input)
-                    if not vid:
-                        st.error("動画IDを解決できませんでした。URLを確認してください。")
-                    else:
-                        with st.spinner("動画情報を取得中..."):
-                            item = fetch_single_video_item(vid, api_key)
-                        if not item:
-                            st.error("指定した動画が取得できませんでした（非公開・処理中・ライブ中などの可能性）。")
-                        else:
-                            now_jst = datetime.now(JST)
-                            logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                            row = build_record_row_from_video_item(item, logged_at_str)
-                            append_rows(ws_record, [row])
-                            updated_count = refresh_record_comment_counts(ws_record, api_key)
-                            st.success(
-                                f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
-                            )
-                else:
-                    with st.spinner("直近50件を取得中..."):
-                        channel_id = resolve_channel_id_simple(record_input, api_key)
-                    if not channel_id:
-                        st.error("チャンネルIDを解決できませんでした。入力内容を確認してください。")
-                    else:
-                        items = fetch_channel_upload_items(
-                            channel_id, max_results=50, api_key=api_key
-                        )
-                        if not items:
-                            st.warning("取得できる動画がありませんでした。")
-                        else:
-                            now_jst = datetime.now(JST)
-                            logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                            rows = [
-                                build_record_row_from_video_item(it, logged_at_str)
-                                for it in items
-                            ]
-                            append_rows(ws_record, rows)
-                            updated_count = refresh_record_comment_counts(ws_record, api_key)
-                            st.success(
-                                f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
-                            )
+            routine_btn = st.button("ルーティン")
 
-# ----------------------------
-# タブ2: チャンネルステータス（Status）
-# ----------------------------
-with tab_status:
-    st.subheader("Statusシート")
-    render_quota_summary("Status")
+            if routine_btn:
+                ws_record = get_record_worksheet()
+                ws_status = get_status_worksheet()
+                with st.spinner("ルーティンを実行中..."):
+                    record_items = fetch_channel_upload_items(
+                        ROUTINE_RECORD_CHANNEL_ID,
+                        max_results=50,
+                        api_key=api_key,
+                    )
 
-    if not api_key:
-        st.info("サイドバーから YouTube API Key を入力してください。")
-    else:
-        url_or_id = st.text_input("URL / ID / 表示名 を入力（チャンネル）", "")
+                    record_count = 0
+                    if record_items:
+                        logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
+                        record_rows = [
+                            build_record_row_from_video_item(it, logged_at_str)
+                            for it in record_items
+                        ]
+                        append_rows(ws_record, record_rows)
+                        record_count = len(record_rows)
+                        refresh_record_comment_counts(ws_record, api_key)
 
-        status_btn = st.button("このチャンネルのステータスを Status に1行追記")
-
-        if status_btn:
-            if not url_or_id.strip():
-                st.error("URL / ID / 表示名 を入力してください。")
-            else:
-                channel_id = resolve_channel_id_simple(url_or_id, api_key)
-                if not channel_id:
-                    st.error("チャンネルIDを解決できませんでした。")
-                else:
-                    with st.spinner("チャンネルステータスを取得中..."):
-                        status = compute_channel_status(channel_id, api_key)
-                    if not status:
-                        st.error("チャンネル情報の取得に失敗しました。")
-                    else:
-                        status_row = build_status_row(status)
-                        ws_status = get_status_worksheet()
-                        append_rows(ws_status, [status_row])
-
-                        st.success("Status シートにチャンネルステータスを1行追記しました。")
-                        st.write(f"チャンネル名: {status['channel_title']}")
-                        st.write(f"登録者数: {status['subs']}")
-                        st.write(f"動画本数: {status['vids_total']}")
-                        st.write(f"総再生回数: {status['views_total']}")
-
-                        preview = dict(zip(STATUS_HEADER, status_row))
-                        st.markdown("#### 取得結果の全項目プレビュー")
-                        st.table(
-                            [
-                                {"項目": key, "値": preview.get(key, "")}
-                                for key in STATUS_HEADER
-                            ]
-                        )
-
-        st.markdown("---")
-        st.markdown("#### 検索対象シートから古い順に一括更新")
-        st.caption("検索対象シートのA列（チャンネルID）を読み込み、Status の最終取得日時が古い順に追記します。")
-        batch_limit = st.number_input(
-            "今回更新する最大件数",
-            min_value=1,
-            max_value=100,
-            value=30,
-            step=1,
-            key="status_batch_limit",
-        )
-        batch_btn = st.button("検索対象シートを読み込み、古い順で Status に追記")
-
-        if batch_btn:
-            with st.spinner("検索対象を読み込み、順次ステータスを取得中..."):
-                filled_count = fill_missing_channel_names_on_search_target()
-                if filled_count:
-                    st.info(f"検索対象シートのチャンネル名を {filled_count} 件補完しました（Statusシートの既存データを利用）。")
-                targets = read_search_targets()
-                if not targets:
-                    st.warning("検索対象シートにチャンネルIDがありません。A列を確認してください。")
-                else:
-                    ordered_targets = sort_targets_by_staleness(targets)
-                    picked = ordered_targets[: int(batch_limit)]
-
-                    ws_status = get_status_worksheet()
-                    result_rows: List[List] = []
-                    ok_items: List[str] = []
-                    ng_items: List[str] = []
-                    progress = st.progress(0.0)
-
-                    for idx, target in enumerate(picked, start=1):
-                        channel_id = target["channel_id"]
+                    status_rows: List[List] = []
+                    failed_status_ids: List[str] = []
+                    for channel_id in ROUTINE_STATUS_CHANNEL_IDS:
                         status = compute_channel_status(channel_id, api_key)
                         if status:
-                            result_rows.append(build_status_row(status))
-                            title = status.get("channel_title") or target.get("channel_name") or ""
-                            ok_items.append(f"{channel_id} {title}".strip())
+                            status_rows.append(build_status_row(status))
                         else:
-                            ng_items.append(channel_id)
-                        progress.progress(idx / len(picked))
+                            failed_status_ids.append(channel_id)
 
-                    if result_rows:
-                        append_rows(ws_status, result_rows)
+                    if status_rows:
+                        append_rows(ws_status, status_rows)
 
-                    st.success(
-                        f"一括更新が完了しました（成功: {len(ok_items)}件 / 失敗: {len(ng_items)}件）。"
+                st.success(
+                    f"ルーティン完了: Record {record_count}件 / Status {len(status_rows)}件を追記しました。"
+                )
+                if failed_status_ids:
+                    st.warning(
+                        "Status 取得に失敗したチャンネルID: "
+                        + ", ".join(failed_status_ids)
                     )
-                    if ok_items:
-                        st.markdown("**成功したチャンネル**")
-                        st.write("\n".join(f"- {x}" for x in ok_items))
-                    if ng_items:
-                        st.markdown("**失敗したチャンネルID**")
-                        st.write("\n".join(f"- {x}" for x in ng_items))
 
-# ----------------------------
-# タブ3: チャンネルステータス解析（TXT/コピーのみ）
-# ----------------------------
-with tab_status_txt:
-    st.subheader("簡易解析")
-    render_quota_summary("Status解析")
-
-    if not api_key:
-        st.info("サイドバーから YouTube API Key を入力してください。")
-    else:
-        url_or_id_txt = st.text_input(
-            "URL / ID / 表示名 を入力（チャンネル、TXT/コピー用）",
-            key="status_txt_channel_input",
-        )
-        analyze_btn = st.button("このチャンネルのステータスを取得（TXT/コピー用）")
-
-        if analyze_btn:
-            if not url_or_id_txt.strip():
-                st.error("URL / ID / 表示名 を入力してください。")
-            else:
-                channel_id = resolve_channel_id_simple(url_or_id_txt, api_key)
-                if not channel_id:
-                    st.error("チャンネルIDを解決できませんでした。")
+            if run_record_btn:
+                ws_record = get_record_worksheet()
+                if not record_input.strip():
+                    st.error("チャンネルURL / ID / @ユーザー名 / 動画URL を入力してください。")
                 else:
-                    with st.spinner("チャンネルステータスを取得中..."):
-                        status = compute_channel_status(channel_id, api_key)
-                    if not status:
-                        st.error("チャンネル情報の取得に失敗しました。")
+                    input_mode = determine_record_input_mode(record_input)
+
+                    if input_mode == "video":
+                        vid = resolve_video_id(record_input)
+                        if not vid:
+                            st.error("動画IDを解決できませんでした。URLを確認してください。")
+                        else:
+                            with st.spinner("動画情報を取得中..."):
+                                item = fetch_single_video_item(vid, api_key)
+                            if not item:
+                                st.error("指定した動画が取得できませんでした（非公開・処理中・ライブ中などの可能性）。")
+                            else:
+                                now_jst = datetime.now(JST)
+                                logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
+                                row = build_record_row_from_video_item(item, logged_at_str)
+                                append_rows(ws_record, [row])
+                                updated_count = refresh_record_comment_counts(ws_record, api_key)
+                                st.success(
+                                    f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                                )
                     else:
-                        # 説明付きテキスト & 数値のみテキストを生成
-                        summary_text = build_status_summary_text(status)
-                        numeric_text = build_status_numeric_text(status)
+                        with st.spinner("直近50件を取得中..."):
+                            channel_id = resolve_channel_id_simple(record_input, api_key)
+                        if not channel_id:
+                            st.error("チャンネルIDを解決できませんでした。入力内容を確認してください。")
+                        else:
+                            items = fetch_channel_upload_items(
+                                channel_id, max_results=50, api_key=api_key
+                            )
+                            if not items:
+                                st.warning("取得できる動画がありませんでした。")
+                            else:
+                                now_jst = datetime.now(JST)
+                                logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
+                                rows = [
+                                    build_record_row_from_video_item(it, logged_at_str)
+                                    for it in items
+                                ]
+                                append_rows(ws_record, rows)
+                                updated_count = refresh_record_comment_counts(ws_record, api_key)
+                                st.success(
+                                    f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                                )
 
-                        # 取得ボタン直下：TXT（数値のみ）ダウンロード
-                        numeric_bytes = numeric_text.encode("utf-8")
-                        st.download_button(
-                            label="📄 TXTのみをダウンロード",
-                            data=numeric_bytes,
-                            file_name="channel_status_numeric.txt",
-                            mime="text/plain",
+    # ----------------------------
+    # タブ2: チャンネルステータス（Status）
+    # ----------------------------
+    with tab_status:
+        st.subheader("Statusシート")
+        render_quota_summary("Status")
+
+        if not api_key:
+            st.info("サイドバーから YouTube API Key を入力してください。")
+        else:
+            url_or_id = st.text_input("URL / ID / 表示名 を入力（チャンネル）", "")
+
+            status_btn = st.button("このチャンネルのステータスを Status に1行追記")
+
+            if status_btn:
+                if not url_or_id.strip():
+                    st.error("URL / ID / 表示名 を入力してください。")
+                else:
+                    channel_id = resolve_channel_id_simple(url_or_id, api_key)
+                    if not channel_id:
+                        st.error("チャンネルIDを解決できませんでした。")
+                    else:
+                        with st.spinner("チャンネルステータスを取得中..."):
+                            status = compute_channel_status(channel_id, api_key)
+                        if not status:
+                            st.error("チャンネル情報の取得に失敗しました。")
+                        else:
+                            status_row = build_status_row(status)
+                            ws_status = get_status_worksheet()
+                            append_rows(ws_status, [status_row])
+
+                            st.success("Status シートにチャンネルステータスを1行追記しました。")
+                            st.write(f"チャンネル名: {status['channel_title']}")
+                            st.write(f"登録者数: {status['subs']}")
+                            st.write(f"動画本数: {status['vids_total']}")
+                            st.write(f"総再生回数: {status['views_total']}")
+
+                            preview = dict(zip(STATUS_HEADER, status_row))
+                            st.markdown("#### 取得結果の全項目プレビュー")
+                            st.table(
+                                [
+                                    {"項目": key, "値": preview.get(key, "")}
+                                    for key in STATUS_HEADER
+                                ]
+                            )
+
+            st.markdown("---")
+            st.markdown("#### 検索対象シートから古い順に一括更新")
+            st.caption("検索対象シートのA列（チャンネルID）を読み込み、Status の最終取得日時が古い順に追記します。")
+            batch_limit = st.number_input(
+                "今回更新する最大件数",
+                min_value=1,
+                max_value=100,
+                value=30,
+                step=1,
+                key="status_batch_limit",
+            )
+            batch_btn = st.button("検索対象シートを読み込み、古い順で Status に追記")
+
+            if batch_btn:
+                with st.spinner("検索対象を読み込み、順次ステータスを取得中..."):
+                    filled_count = fill_missing_channel_names_on_search_target()
+                    if filled_count:
+                        st.info(f"検索対象シートのチャンネル名を {filled_count} 件補完しました（Statusシートの既存データを利用）。")
+                    targets = read_search_targets()
+                    if not targets:
+                        st.warning("検索対象シートにチャンネルIDがありません。A列を確認してください。")
+                    else:
+                        ordered_targets = sort_targets_by_staleness(targets)
+                        picked = ordered_targets[: int(batch_limit)]
+
+                        ws_status = get_status_worksheet()
+                        result_rows: List[List] = []
+                        ok_items: List[str] = []
+                        ng_items: List[str] = []
+                        progress = st.progress(0.0)
+
+                        for idx, target in enumerate(picked, start=1):
+                            channel_id = target["channel_id"]
+                            status = compute_channel_status(channel_id, api_key)
+                            if status:
+                                result_rows.append(build_status_row(status))
+                                title = status.get("channel_title") or target.get("channel_name") or ""
+                                ok_items.append(f"{channel_id} {title}".strip())
+                            else:
+                                ng_items.append(channel_id)
+                            progress.progress(idx / len(picked))
+
+                        if result_rows:
+                            append_rows(ws_status, result_rows)
+
+                        st.success(
+                            f"一括更新が完了しました（成功: {len(ok_items)}件 / 失敗: {len(ng_items)}件）。"
                         )
+                        if ok_items:
+                            st.markdown("**成功したチャンネル**")
+                            st.write("\n".join(f"- {x}" for x in ok_items))
+                        if ng_items:
+                            st.markdown("**失敗したチャンネルID**")
+                            st.write("\n".join(f"- {x}" for x in ng_items))
 
-                        # 取得ボタン直下：説明付きテキストをクリップボードにコピー
-                        components.html(
-                            f"""
-<div>
-  <button id="copySummaryBtn"
-      style="
-          background-color: #FF4B4B;
-          color: white;
-          border: none;
-          padding: 0.4rem 1rem;
-          border-radius: 0.3rem;
-          cursor: pointer;
-          font-size: 0.9rem;
-          margin-top: 0.5rem;
-      ">
-      📋 集計結果（説明付き）をコピー
-  </button>
-  <span id="copySummaryStatus"
-      style="margin-left: 0.5rem; font-size: 0.85rem; color: #333;">
-  </span>
+    # ----------------------------
+    # タブ3: チャンネルステータス解析（TXT/コピーのみ）
+    # ----------------------------
+    with tab_status_txt:
+        st.subheader("簡易解析")
+        render_quota_summary("Status解析")
 
-  <script>
-    const textToCopy = {json.dumps(summary_text)};
-    const btn = document.getElementById("copySummaryBtn");
-    const status = document.getElementById("copySummaryStatus");
+        if not api_key:
+            st.info("サイドバーから YouTube API Key を入力してください。")
+        else:
+            url_or_id_txt = st.text_input(
+                "URL / ID / 表示名 を入力（チャンネル、TXT/コピー用）",
+                key="status_txt_channel_input",
+            )
+            analyze_btn = st.button("このチャンネルのステータスを取得（TXT/コピー用）")
 
-    btn.addEventListener("click", async () => {{
-      try {{
-        await navigator.clipboard.writeText(textToCopy);
-        status.textContent = "コピーしました。";
-      }} catch (err) {{
-        status.textContent = "コピーに失敗しました: " + err;
-      }}
-    }});
-  </script>
-</div>
-                            """,
-                            height=100,
-                        )
+            if analyze_btn:
+                if not url_or_id_txt.strip():
+                    st.error("URL / ID / 表示名 を入力してください。")
+                else:
+                    channel_id = resolve_channel_id_simple(url_or_id_txt, api_key)
+                    if not channel_id:
+                        st.error("チャンネルIDを解決できませんでした。")
+                    else:
+                        with st.spinner("チャンネルステータスを取得中..."):
+                            status = compute_channel_status(channel_id, api_key)
+                        if not status:
+                            st.error("チャンネル情報の取得に失敗しました。")
+                        else:
+                            # 説明付きテキスト & 数値のみテキストを生成
+                            summary_text = build_status_summary_text(status)
+                            numeric_text = build_status_numeric_text(status)
 
-                        # 下にプレビュー（必要なときだけスクロールして確認）
-                        st.markdown("#### 集計結果（説明付き：ChatGPT解析用プレビュー）")
-                        st.text(summary_text)
+                            # 取得ボタン直下：TXT（数値のみ）ダウンロード
+                            numeric_bytes = numeric_text.encode("utf-8")
+                            st.download_button(
+                                label="📄 TXTのみをダウンロード",
+                                data=numeric_bytes,
+                                file_name="channel_status_numeric.txt",
+                                mime="text/plain",
+                            )
+
+                            # 取得ボタン直下：説明付きテキストをクリップボードにコピー
+                            components.html(
+                                f"""
+    <div>
+      <button id="copySummaryBtn"
+          style="
+              background-color: #FF4B4B;
+              color: white;
+              border: none;
+              padding: 0.4rem 1rem;
+              border-radius: 0.3rem;
+              cursor: pointer;
+              font-size: 0.9rem;
+              margin-top: 0.5rem;
+          ">
+          📋 集計結果（説明付き）をコピー
+      </button>
+      <span id="copySummaryStatus"
+          style="margin-left: 0.5rem; font-size: 0.85rem; color: #333;">
+      </span>
+
+      <script>
+        const textToCopy = {json.dumps(summary_text)};
+        const btn = document.getElementById("copySummaryBtn");
+        const status = document.getElementById("copySummaryStatus");
+
+        btn.addEventListener("click", async () => {{
+          try {{
+            await navigator.clipboard.writeText(textToCopy);
+            status.textContent = "コピーしました。";
+          }} catch (err) {{
+            status.textContent = "コピーに失敗しました: " + err;
+          }}
+        }});
+      </script>
+    </div>
+                                """,
+                                height=100,
+                            )
+
+                            # 下にプレビュー（必要なときだけスクロールして確認）
+                            st.markdown("#### 集計結果（説明付き：ChatGPT解析用プレビュー）")
+                            st.text(summary_text)
+
+
+if __name__ == "__main__":
+    render_streamlit_app()
