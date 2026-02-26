@@ -26,7 +26,7 @@ function onOpen() {
 /**
  * 同時実行を避けるためのロック実行ラッパーです。
  */
-function runWithDocLock_(fn, waitMs) {
+function runWithDocLock_(fn, waitMs, alwaysRefilterSheetNames) {
   const lock = LockService.getDocumentLock();
   const ms = (waitMs != null) ? waitMs : 30000;
   if (!lock.tryLock(ms)) {
@@ -42,8 +42,11 @@ function runWithDocLock_(fn, waitMs) {
     }
     return fn();
   } finally {
-    if (ss && filterSheetNames.length > 0) {
-      restoreAllSheetFilters_(ss, filterSheetNames);
+    if (ss) {
+      const restoreTargets = mergeSheetNameLists_(filterSheetNames, alwaysRefilterSheetNames);
+      if (restoreTargets.length > 0) {
+        restoreAllSheetFilters_(ss, restoreTargets);
+      }
     }
     try { lock.releaseLock(); } catch (e) {}
   }
@@ -66,6 +69,29 @@ function captureAndClearAllSheetFilters_(ss) {
   }
 
   return sheetNames;
+}
+
+/**
+ * シート名リストを結合し、空要素除去＋重複排除して返します。
+ */
+function mergeSheetNameLists_(baseNames, extraNames) {
+  const merged = [];
+  const seen = {};
+
+  function addAll_(arr) {
+    if (!arr || !arr.length) return;
+    for (let i = 0; i < arr.length; i++) {
+      const name = arr[i] != null ? String(arr[i]).trim() : '';
+      if (!name || seen[name]) continue;
+      seen[name] = true;
+      merged.push(name);
+    }
+  }
+
+  addAll_(baseNames);
+  addAll_(extraNames);
+
+  return merged;
 }
 
 /**
@@ -744,7 +770,7 @@ function compressRecordAndUpdateSummary() {
       );
       throw err;
     }
-  });
+  }, null, ['record', 'summary']);
 }
 
 
@@ -1006,7 +1032,7 @@ function dedupeStatusSheet() {
       '補足:\n' +
       '  ・速度優先のため deleteRow は使わず、一括書き戻しに変更しています。'
     );
-  });
+  }, null, ['Status']);
 }
 
 /**
