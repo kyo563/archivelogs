@@ -2,7 +2,7 @@ name: Daily Auto Fetch
 
 on:
   schedule:
-    - cron: '40 23 * * *' # JST 08:40
+    - cron: '0 23 * * *' # JST 08:00
   workflow_dispatch:
 
 jobs:
