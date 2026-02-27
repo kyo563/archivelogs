@@ -767,7 +767,7 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
     vtype = "video"
     if live_details:
         vtype = "live"
-    elif duration_sec <= 61:
+    elif duration_sec <= 119:
         vtype = "short"
 
     # 公開日時（JST）
