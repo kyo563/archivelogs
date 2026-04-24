@@ -324,6 +324,18 @@ function diffDaysByCalendar_(startDate, endDate, tz) {
 }
 
 /**
+ * 純粋なカレンダー日差を返します（end - start）。
+ * 例: 2026/04/16 → 2026/04/24 は 8。
+ */
+function calcCalendarDayDiff_(startDate, endDate, tz) {
+  if (!startDate || !endDate) return null;
+  const s = toEpochDayByTZ_(startDate, tz);
+  const e = toEpochDayByTZ_(endDate, tz);
+  if (s == null || e == null) return null;
+  return e - s;
+}
+
+/**
  * 集計期間ラベルを作成します。
  * 形式: dd days(mm/dd～mm/dd)
  */
@@ -477,13 +489,28 @@ function safeRateForOverview_(numerator, denominator) {
 function normalizeTitleForMatch_(title) {
   if (title == null) return '';
   let s = String(title);
-
   const hm = s.match(/HYPERLINK\(\s*"[^"]*"\s*,\s*"([^"]*)"\s*\)/i);
-  if (hm && hm[1]) s = hm[1];
+  if (hm && hm[1]) {
+    s = hm[1];
+  } else {
+    const hm2 = s.match(/HYPERLINK\(\s*[^,]+,\s*"([^"]*)"\s*\)/i);
+    if (hm2 && hm2[1]) s = hm2[1];
+  }
 
   s = s.replace(/\r\n|\r|\n/g, ' ');
   s = s.replace(/　/g, ' ');
   s = s.trim().replace(/\s+/g, ' ').toLowerCase();
+  return s;
+}
+
+/**
+ * タイトル比較用の装飾除去キーを作成します。
+ */
+function normalizeTitleLooseForMatch_(title) {
+  let s = normalizeTitleForMatch_(title);
+  if (!s) return '';
+  s = s.replace(/[【】\[\]\(\)（）「」『』〈〉《》〔〕｛｝{}!！?？:：・。、,.\-ー~～'"]/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
   return s;
 }
 
@@ -494,16 +521,19 @@ function findSummaryRowByTitle_(summaryRows, summaryHeaderMap, title) {
   const titleIdx = summaryHeaderMap.title;
   const viewIdx = summaryHeaderMap.last_view_count;
   const target = normalizeTitleForMatch_(title);
-  if (!target) return null;
+  const targetLoose = normalizeTitleLooseForMatch_(title);
+  if (!target && !targetLoose) return null;
 
   const exact = [];
+  const exactLoose = [];
   const loose = [];
 
   for (let i = 0; i < summaryRows.length; i++) {
     const row = summaryRows[i];
     const rowTitle = row[titleIdx];
     const norm = normalizeTitleForMatch_(rowTitle);
-    if (!norm) continue;
+    const normLoose = normalizeTitleLooseForMatch_(rowTitle);
+    if (!norm && !normLoose) continue;
 
     const item = {
       row: row,
@@ -512,9 +542,14 @@ function findSummaryRowByTitle_(summaryRows, summaryHeaderMap, title) {
       lastViewCount: toNumberForOverview_(row[viewIdx])
     };
 
-    if (norm === target) {
+    if (target && norm === target) {
       exact.push(item);
-    } else if (norm.indexOf(target) >= 0 || target.indexOf(norm) >= 0) {
+    } else if (targetLoose && normLoose && normLoose === targetLoose) {
+      exactLoose.push(item);
+    } else if (
+      (target && norm && (norm.indexOf(target) >= 0 || target.indexOf(norm) >= 0)) ||
+      (targetLoose && normLoose && (normLoose.indexOf(targetLoose) >= 0 || targetLoose.indexOf(normLoose) >= 0))
+    ) {
       loose.push(item);
     }
   }
@@ -529,7 +564,7 @@ function findSummaryRowByTitle_(summaryRows, summaryHeaderMap, title) {
     return arr[0];
   }
 
-  return pickMax_(exact) || pickMax_(loose);
+  return pickMax_(exact) || pickMax_(exactLoose) || pickMax_(loose);
 }
 
 /**
@@ -552,14 +587,16 @@ function getNearestLogAtOrBefore_(logs, targetDate, tz) {
 }
 
 /**
- * summaryのタイトル一致動画について、7日再生増分を計算します。
+ * summaryのタイトル一致動画について、
+ * 最新日から7日以上前の直近実績との差分を計算します（厳密な7日差分ではありません）。
  */
-function calcVideoSevenDayViewDeltaByTitle_(summaryIndex, title, latestStatusDate, tz) {
+function calcVideoPreviousComparableViewDeltaByTitle_(summaryIndex, title, latestStatusDate, tz) {
   const result = {
     found: false,
     delta: '',
     matchedTitle: '',
-    reason: ''
+    reason: '',
+    source: ''
   };
 
   if (!summaryIndex || !summaryIndex.exists) {
@@ -574,7 +611,7 @@ function calcVideoSevenDayViewDeltaByTitle_(summaryIndex, title, latestStatusDat
 
   const match = findSummaryRowByTitle_(summaryIndex.rows, summaryIndex.headerMap, title);
   if (!match) {
-    result.reason = 'top_video_not_found';
+    result.reason = 'title_not_found';
     return result;
   }
 
@@ -606,7 +643,7 @@ function calcVideoSevenDayViewDeltaByTitle_(summaryIndex, title, latestStatusDat
   }
 
   if (!baseVideoLog) {
-    result.reason = 'base_video_log_missing';
+    result.reason = 'base_log_missing';
     return result;
   }
 
@@ -617,6 +654,8 @@ function calcVideoSevenDayViewDeltaByTitle_(summaryIndex, title, latestStatusDat
   }
 
   result.delta = diff;
+  result.reason = 'calculated_from_summary';
+  result.source = 'summary';
   return result;
 }
 
@@ -649,25 +688,34 @@ function classifyWeeklyOverview_(metrics) {
  */
 function buildWeeklyOverviewMemo_(metrics) {
   if (!metrics.hasBase) return '比較基準データ不足。';
-  if (metrics.summaryMissing) return 'summary未作成のためトップ動画寄与は未判定。';
-  if (metrics.topVideoNotFound) return 'トップ動画履歴が見つからないため寄与率は未判定。';
 
   const rate = metrics.topContributionRate;
   const viewsDiff = metrics.viewsDiff;
   const subsDiff = metrics.subsDiff;
   const uploadsDiff = metrics.uploadsDiff;
+  const reason = metrics.topVideoReason;
+  const fallbackSuffix = reason === 'status_fallback_used'
+    ? '（summary履歴なし。Status上の同一トップ動画から参考算出）'
+    : '';
 
   if (rate !== '' && rate != null) {
-    if (rate >= 0.80) return '単一動画の寄与が非常に高いです。短期バズ寄りです。';
-    if (rate >= 0.50) return '特定動画が強く牽引しています。ヒット依存傾向です。';
-    if (rate >= 0.25) return '伸びている動画はありますが、全体にも再生が分散しています。';
-    if (rate < 0.25 && viewsDiff > 0) return '特定動画依存は低く、複数動画で堅実に伸びています。';
+    if (rate >= 0.80) return '単一動画の寄与が非常に高いです。短期バズ寄りです。' + fallbackSuffix;
+    if (rate >= 0.50) return '特定動画が強く牽引しています。ヒット依存傾向です。' + fallbackSuffix;
+    if (rate >= 0.25) return '伸びている動画はありますが、全体にも再生が分散しています。' + fallbackSuffix;
+    if (rate < 0.25 && viewsDiff > 0) return '特定動画依存は低く、複数動画で堅実に伸びています。' + fallbackSuffix;
   }
 
-  if (viewsDiff > 0 && subsDiff <= 0) return '再生は伸びていますが、登録増は弱めです。';
-  if (uploadsDiff === 0 && viewsDiff > 0) return '投稿なしでも再生増あり。過去動画が動いている可能性があります。';
-  if (uploadsDiff > 0 && viewsDiff <= 0) return '投稿ありですが、反応は弱めです。';
-  return '通常推移です。';
+  if (viewsDiff > 0 && subsDiff <= 0) return '再生は伸びていますが、登録増は弱めです。' + fallbackSuffix;
+  if (uploadsDiff === 0 && viewsDiff > 0) return '投稿なしでも再生増あり。過去動画が動いている可能性があります。' + fallbackSuffix;
+  if (uploadsDiff > 0 && viewsDiff <= 0) return '投稿ありですが、反応は弱めです。' + fallbackSuffix;
+
+  if (reason === 'summary_missing') return '通常推移です。トップ動画寄与は未判定: summary未作成。';
+  if (reason === 'title_not_found') return '通常推移です。トップ動画寄与は未判定: summaryに見つからずStatus fallbackも不一致。';
+  if (reason === 'base_log_missing') return '通常推移です。トップ動画寄与は未判定: 7日以上前ログ不足。';
+  if (reason === 'status_fallback_used') return 'summary履歴なし。Status上の同一トップ動画から参考算出。';
+  if (reason === 'calculated_from_summary') return 'summary履歴からトップ動画寄与率を算出。';
+
+  return '通常推移です。' + fallbackSuffix;
 }
 
 /**
@@ -701,6 +749,15 @@ function buildWeeklyChannelOverview() {
         '直近10日トップ動画タイトル'
       ];
       requireHeaders_(statusHeaderMap, requiredStatusHeaders, 'Status');
+      const topVideoViewsHeaderCandidates = ['直近10日トップ動画再生数', 'トップ動画再生数'];
+      let topVideoViewsIdx = null;
+      for (let hi = 0; hi < topVideoViewsHeaderCandidates.length; hi++) {
+        const key = topVideoViewsHeaderCandidates[hi];
+        if (statusHeaderMap[key] != null) {
+          topVideoViewsIdx = statusHeaderMap[key];
+          break;
+        }
+      }
 
       const grouped = {};
       for (let i = 1; i < statusValues.length; i++) {
@@ -737,11 +794,12 @@ function buildWeeklyChannelOverview() {
         '集計日',
         'チャンネル名',
         '登録者数',
-        '7日登録者増',
-        '7日再生増',
-        '7日投稿増',
+        '比較日数',
+        '前回比登録者増',
+        '前回比再生増',
+        '前回比投稿増',
         '週間トップ動画',
-        'トップ動画7日再生増',
+        'トップ動画前回比再生増',
         'トップ動画寄与率',
         '勢い',
         '投稿状況',
@@ -763,7 +821,9 @@ function buildWeeklyChannelOverview() {
       const outputRows = [];
       let dataShortageCount = 0;
       let contributionComputedCount = 0;
-      let topVideoNotFoundCount = 0;
+      let summaryComputedCount = 0;
+      let statusFallbackComputedCount = 0;
+      let undeterminedCount = 0;
 
       const channelIds = Object.keys(grouped);
       for (let ci = 0; ci < channelIds.length; ci++) {
@@ -788,6 +848,7 @@ function buildWeeklyChannelOverview() {
 
         const hasBase = !!baseItem;
         if (!hasBase) dataShortageCount++;
+        const compareDays = hasBase ? calcCalendarDayDiff_(baseItem.date, latestDate, tz) : '';
 
         const latestSubs = toNumberForOverview_(latestRow[statusHeaderMap['登録者数']]);
         const latestUploads = toNumberForOverview_(latestRow[statusHeaderMap['動画本数']]);
@@ -807,34 +868,60 @@ function buildWeeklyChannelOverview() {
 
         let topVideoDelta = '';
         let topContributionRate = '';
-        let topVideoNotFound = false;
-        let summaryMissing = !summaryIndex.exists;
+        let topVideoReason = '';
 
         if (summaryIndex.exists) {
-          const calc = calcVideoSevenDayViewDeltaByTitle_(summaryIndex, topVideoTitle, latestDate, tz);
-          if (calc.reason === 'top_video_not_found') {
-            topVideoNotFound = true;
-            topVideoNotFoundCount++;
-          }
+          const calc = calcVideoPreviousComparableViewDeltaByTitle_(summaryIndex, topVideoTitle, latestDate, tz);
+          topVideoReason = calc.reason || '';
           if (calc.delta !== '' && calc.delta != null) {
             topVideoDelta = calc.delta;
+            if (calc.reason === 'calculated_from_summary') summaryComputedCount++;
           }
-          if (viewsDiff !== '' && viewsDiff != null && viewsDiff > 0 && topVideoDelta !== '' && topVideoDelta != null) {
-            topContributionRate = safeRateForOverview_(topVideoDelta, viewsDiff);
-            if (topContributionRate !== '' && topContributionRate != null) {
-              contributionComputedCount++;
+        } else {
+          topVideoReason = 'summary_missing';
+        }
+
+        if ((topVideoDelta === '' || topVideoDelta == null) && hasBase) {
+          const baseTitleRaw = baseRow[statusHeaderMap['直近10日トップ動画タイトル']];
+          const baseTitle = baseTitleRaw != null ? String(baseTitleRaw).trim() : '';
+          const latestNormTitle = normalizeTitleForMatch_(topVideoTitle);
+          const baseNormTitle = normalizeTitleForMatch_(baseTitle);
+          const sameTitle = latestNormTitle && baseNormTitle && latestNormTitle === baseNormTitle;
+
+          if (sameTitle && topVideoViewsIdx != null) {
+            const latestTopViews = toNumberForOverview_(latestRow[topVideoViewsIdx]);
+            const baseTopViews = toNumberForOverview_(baseRow[topVideoViewsIdx]);
+            const fallbackDiff = safeDiffForOverview_(latestTopViews, baseTopViews);
+            if (fallbackDiff !== '' && fallbackDiff != null && fallbackDiff >= 0) {
+              topVideoDelta = fallbackDiff;
+              topVideoReason = 'status_fallback_used';
+              statusFallbackComputedCount++;
+            } else if (!topVideoReason) {
+              topVideoReason = 'base_log_missing';
             }
+          } else if (!topVideoReason || topVideoReason === 'title_not_found') {
+            topVideoReason = 'title_not_found';
           }
         }
 
+        if (viewsDiff !== '' && viewsDiff != null && viewsDiff > 0 && topVideoDelta !== '' && topVideoDelta != null) {
+          topContributionRate = safeRateForOverview_(topVideoDelta, viewsDiff);
+          if (topContributionRate !== '' && topContributionRate != null) {
+            contributionComputedCount++;
+          }
+        }
+        if (!topVideoReason && (topContributionRate === '' || topContributionRate == null)) {
+          topVideoReason = 'base_log_missing';
+        }
+        if (topContributionRate === '' || topContributionRate == null) undeterminedCount++;
+
         const metrics = {
           hasBase: hasBase,
-          summaryMissing: summaryMissing,
-          topVideoNotFound: topVideoNotFound,
           subsDiff: subsDiff === '' ? null : subsDiff,
           viewsDiff: viewsDiff === '' ? null : viewsDiff,
           uploadsDiff: uploadsDiff === '' ? null : uploadsDiff,
-          topContributionRate: topContributionRate
+          topContributionRate: topContributionRate,
+          topVideoReason: topVideoReason
         };
 
         const momentum = classifyWeeklyOverview_(metrics);
@@ -855,6 +942,7 @@ function buildWeeklyChannelOverview() {
           Utilities.formatDate(latestDate, tz, 'yyyy/MM/dd'),
           latestRow[statusHeaderMap['チャンネル名']] != null ? String(latestRow[statusHeaderMap['チャンネル名']]) : '',
           latestSubs != null ? latestSubs : '',
+          compareDays !== '' && compareDays != null ? compareDays : '',
           subsDiff,
           viewsDiff,
           uploadsDiff,
@@ -904,11 +992,12 @@ function buildWeeklyChannelOverview() {
 
       if (outputRows.length > 0) {
         outSheet.getRange(2, 3, outputRows.length, 1).setNumberFormat('#,##0');
-        outSheet.getRange(2, 4, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 4, outputRows.length, 1).setNumberFormat('0');
         outSheet.getRange(2, 5, outputRows.length, 1).setNumberFormat('#,##0');
         outSheet.getRange(2, 6, outputRows.length, 1).setNumberFormat('#,##0');
-        outSheet.getRange(2, 8, outputRows.length, 1).setNumberFormat('#,##0');
-        outSheet.getRange(2, 9, outputRows.length, 1).setNumberFormat('0.0%');
+        outSheet.getRange(2, 7, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 9, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 10, outputRows.length, 1).setNumberFormat('0.0%');
       }
 
       setBordersForUsedRange_(outSheet);
@@ -918,7 +1007,9 @@ function buildWeeklyChannelOverview() {
         '出力チャンネル数: ' + outputRows.length + '\n' +
         'データ不足件数: ' + dataShortageCount + '\n' +
         'トップ動画寄与率算出件数: ' + contributionComputedCount + '\n' +
-        'トップ動画未一致件数: ' + topVideoNotFoundCount
+        'summaryから算出した件数: ' + summaryComputedCount + '\n' +
+        'Status fallbackで算出した件数: ' + statusFallbackComputedCount + '\n' +
+        '未判定件数: ' + undeterminedCount
       );
     } catch (err) {
       appendErrorLog_(ss, 'buildWeeklyChannelOverview', 'main', err, {});
