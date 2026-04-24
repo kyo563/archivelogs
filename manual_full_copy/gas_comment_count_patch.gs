@@ -706,54 +706,69 @@ function classifyWeeklyGrowthType_(metrics) {
   const subsDiff = metrics.subsDiff != null ? metrics.subsDiff : null;
   const subsGrowthRate = metrics.subsGrowthRate != null ? metrics.subsGrowthRate : null;
   const postingAccel = metrics.postingAccel != null ? metrics.postingAccel : null;
+  const topContributionRate = metrics.topContributionRate != null ? metrics.topContributionRate : null;
+  const topVideoBuzzLevel = metrics.topVideoBuzzLevel || '';
+  const topVideoType = metrics.topVideoType || '';
+  const hasTopContributionRate = topContributionRate != null;
+  const hasPostingAccel = postingAccel != null;
+  const hasSubsGrowthRate = subsGrowthRate != null;
 
   if (uploadsDiff === 0 && viewsDiff != null && viewsDiff <= 0 && subsDiff != null && subsDiff <= 0) return '横ばい';
 
-  if (
-    viewsDiff != null && viewsDiff > 0 &&
-    subsDiff != null && subsDiff > 0 &&
-    subsGrowthRate != null &&
-    subsGrowthRate >= 0.003
-  ) {
-    return '登録成長型';
-  }
-
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ') return '単一動画登録牽引型';
+  if (subsDiff != null && subsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ' && topVideoType === 'ショート推定') return 'ショートバズ登録増型';
+  if (subsDiff != null && subsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ' && topVideoType === '通常動画推定') return '通常動画ヒット登録増型';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.50 && topContributionRate < 0.80) return 'ヒット牽引型';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate < 0.25 && hasPostingAccel && postingAccel >= 0.8) return '堅実成長型';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasPostingAccel && postingAccel >= 1.2 && (!hasTopContributionRate || topContributionRate < 0.50)) return '投稿強化型';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasSubsGrowthRate && subsGrowthRate >= 0.003) return '登録成長型';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0 && hasTopContributionRate && topContributionRate >= 0.80) return '再生先行型';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0 && hasTopContributionRate && topContributionRate >= 0.50 && topContributionRate < 0.80) return '再生先行型';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0 && hasTopContributionRate && topContributionRate < 0.25) return '再生先行型';
   if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0) return '再生先行型';
-
-  if (postingAccel != null && postingAccel >= 2.0 && viewsDiff != null && viewsDiff > 0) return '投稿加速型';
-  if (postingAccel != null && postingAccel >= 2.0 && viewsDiff != null && viewsDiff <= 0) return '投稿空振り型';
-  if (uploadsDiff === 0 && viewsDiff != null && viewsDiff > 0) return '過去動画稼働型';
-  if (postingAccel != null && postingAccel >= 0.8 && postingAccel <= 1.2 && viewsDiff != null && viewsDiff > 0) return '安定運用型';
-  if (postingAccel != null && postingAccel < 0.8 && viewsDiff != null && viewsDiff > 0) return '省エネ維持型';
+  if (hasPostingAccel && postingAccel >= 2.0 && viewsDiff != null && viewsDiff > 0) return '投稿加速型';
+  if (hasPostingAccel && postingAccel >= 2.0 && viewsDiff != null && viewsDiff <= 0) return '投稿空振り型';
+  if (uploadsDiff === 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.50) return '過去動画稼働型';
+  if (uploadsDiff === 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate < 0.50) return '過去動画分散稼働型';
+  if (hasPostingAccel && postingAccel >= 0.8 && postingAccel <= 1.2 && viewsDiff != null && viewsDiff > 0) return '安定運用型';
+  if (hasPostingAccel && postingAccel < 0.8 && viewsDiff != null && viewsDiff > 0) return '省エネ維持型';
 
   return '通常';
 }
 
 function buildWeeklyOverviewMemo_(metrics) {
-  const growth = metrics.growthType;
-  const memoByGrowth = {
-    'データ不足': '比較基準データ不足です。',
-    '横ばい': '投稿・再生・登録のいずれも大きな動きはありません。',
-    '登録成長型': '再生増が登録にもつながっています。登録者規模に対して増加率も高めです。',
-    '再生先行型': '再生は伸びていますが、登録増は弱めです。露出先行の状態です。',
-    '投稿加速型': '直近の投稿頻度が平常時より高く、再生も伸びています。',
-    '投稿空振り型': '投稿頻度は上がっていますが、再生面の反応は弱めです。',
-    '過去動画稼働型': '投稿なしでも再生増があります。過去動画が動いています。',
-    '安定運用型': '投稿頻度は平常に近く、再生も伸びています。安定した運用です。',
-    '省エネ維持型': '投稿頻度は落ちていますが、既存動画で再生を維持しています。',
-    '通常': '通常推移です。'
-  };
-  let memo = memoByGrowth[growth] || '通常推移です。';
+  const uploadsDiff = metrics.uploadsDiff != null ? metrics.uploadsDiff : null;
+  const viewsDiff = metrics.viewsDiff != null ? metrics.viewsDiff : null;
+  const subsDiff = metrics.subsDiff != null ? metrics.subsDiff : null;
+  const subsGrowthRate = metrics.subsGrowthRate != null ? metrics.subsGrowthRate : null;
+  const postingAccel = metrics.postingAccel != null ? metrics.postingAccel : null;
+  const topContributionRate = metrics.topContributionRate != null ? metrics.topContributionRate : null;
+  const topVideoBuzzLevel = metrics.topVideoBuzzLevel || '';
+  const topVideoType = metrics.topVideoType || '';
+  const hasTopContributionRate = topContributionRate != null;
+  const hasPostingAccel = postingAccel != null;
+  const hasSubsGrowthRate = subsGrowthRate != null;
 
-  if (metrics.contributionMethod === 'Status推定') {
-    memo += '（直近10日トップ動画シェアからの参考判定）';
-  } else if (metrics.contributionMethod === 'Status実測') {
-    memo += '（Status上の同一トップ動画から参考算出）';
-  } else if (metrics.contributionMethod === '未判定') {
-    memo += '（トップ動画寄与は未判定）';
-  }
-
-  return memo;
+  if (!metrics.hasBase) return '比較基準データ不足です。';
+  if (uploadsDiff === 0 && viewsDiff != null && viewsDiff <= 0 && subsDiff != null && subsDiff <= 0) return '投稿・再生・登録のいずれも大きな動きはありません。';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ') return '単一動画の伸びが登録者増につながっています。短期バズによる成長です。';
+  if (subsDiff != null && subsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ' && topVideoType === 'ショート推定') return 'ショート動画が大きく伸び、登録者増にもつながっています。';
+  if (subsDiff != null && subsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ' && topVideoType === '通常動画推定') return '通常動画が強く伸び、登録者増にもつながっています。';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.50 && topContributionRate < 0.80) return '特定動画が強く牽引し、登録者増にもつながっています。';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate < 0.25 && hasPostingAccel && postingAccel >= 0.8) return '特定動画に依存せず、複数動画の積み上げで登録者が増えています。';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasPostingAccel && postingAccel >= 1.2 && (!hasTopContributionRate || topContributionRate < 0.50)) return '投稿頻度を高めた運用が、再生と登録者増につながっています。';
+  if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasSubsGrowthRate && subsGrowthRate >= 0.003) return '再生増が登録にもつながっています。登録者規模に対して増加率も高めです。';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0 && hasTopContributionRate && topContributionRate >= 0.80) return '単一動画は伸びていますが、登録者増にはつながっていません。';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0 && hasTopContributionRate && topContributionRate >= 0.50 && topContributionRate < 0.80) return '特定動画が再生を牽引していますが、登録者増は弱めです。';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0 && hasTopContributionRate && topContributionRate < 0.25) return '複数動画で再生は回っていますが、登録者増は弱めです。';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0) return '再生は伸びていますが、登録増は弱めです。露出先行の状態です。';
+  if (hasPostingAccel && postingAccel >= 2.0 && viewsDiff != null && viewsDiff > 0) return '直近の投稿頻度が平常時より高く、再生も伸びています。';
+  if (hasPostingAccel && postingAccel >= 2.0 && viewsDiff != null && viewsDiff <= 0) return '投稿頻度は上がっていますが、再生面の反応は弱めです。';
+  if (uploadsDiff === 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.50) return '投稿なしでも再生増があります。特定の過去動画が動いています。';
+  if (uploadsDiff === 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate < 0.50) return '投稿なしでも再生増があります。複数の過去動画が動いています。';
+  if (hasPostingAccel && postingAccel >= 0.8 && postingAccel <= 1.2 && viewsDiff != null && viewsDiff > 0) return '投稿頻度は平常に近く、再生も伸びています。安定した運用です。';
+  if (hasPostingAccel && postingAccel < 0.8 && viewsDiff != null && viewsDiff > 0) return '投稿頻度は落ちていますが、既存動画で再生を維持しています。';
+  return '通常推移です。';
 }
 
 /**
@@ -843,11 +858,18 @@ function buildWeeklyChannelOverview() {
       ];
 
       const growthPriority = {
+        'ショートバズ登録増型': 1,
+        '通常動画ヒット登録増型': 1,
+        '単一動画登録牽引型': 1,
+        'ヒット牽引型': 2,
+        '堅実成長型': 2,
+        '投稿強化型': 2,
         '登録成長型': 1,
-        '投稿加速型': 2,
+        '投稿加速型': 3,
         '安定運用型': 3,
         '再生先行型': 4,
         '過去動画稼働型': 5,
+        '過去動画分散稼働型': 5,
         '省エネ維持型': 6,
         '投稿空振り型': 7,
         '通常': 8,
