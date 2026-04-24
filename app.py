@@ -107,6 +107,50 @@ STATUS_HEADER = [
     "直近30日視聴/登録比",       # views_per_sub_last30
 ]
 
+
+def safe_number(value, default=0):
+    """数値列を安全に扱う。None/空/変換不能は default にする。"""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "":
+            return default
+        try:
+            value = float(text) if "." in text else int(text)
+        except ValueError:
+            return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return value
+    return default
+
+
+def safe_text(value, default=""):
+    """文字列列を安全に扱う。None は空文字、改行はスペースに置換する。"""
+    if value is None:
+        return default
+    return str(value).replace("\n", " ").strip()
+
+
+def pad_list(values, length, default=""):
+    """リストを固定長にそろえる（不足は埋める・超過は切る）。"""
+    src = list(values or [])
+    return src[:length] + [default] * max(length - len(src), 0)
+
+
+def validate_status_row(row: List):
+    if len(row) != len(STATUS_HEADER):
+        raise RuntimeError(
+            f"Status row length mismatch: row={len(row)} header={len(STATUS_HEADER)}"
+        )
+
+
+def validate_status_rows(rows: List[List]):
+    for row in rows:
+        validate_status_row(row)
+
 # YouTube Data API の概算クオータ
 ROUTINE_RECORD_CHANNEL_ID = "UCojaLfI34qEb0pCTtbjDeEg"
 ROUTINE_STATUS_CHANNEL_IDS = [
@@ -243,6 +287,11 @@ def get_status_worksheet():
     first_row = ws.row_values(1)
     if not first_row:
         ws.append_row(STATUS_HEADER)
+    elif first_row != STATUS_HEADER:
+        raise RuntimeError(
+            "Status シートのヘッダーが STATUS_HEADER と一致しません。"
+            " 列順を手動で確認してください。"
+        )
     return ws
 
 
@@ -397,6 +446,8 @@ def sort_targets_by_staleness(targets: List[Dict[str, str]]) -> List[Dict[str, s
 def append_rows(ws, rows: List[List], value_input_option: str = "USER_ENTERED"):
     if not rows:
         return
+    if getattr(ws, "title", "") == STATUS_SHEET_NAME:
+        validate_status_rows(rows)
     try:
         ws.append_rows(rows, value_input_option=value_input_option)
     except AttributeError:
@@ -1057,14 +1108,14 @@ def compute_channel_status(channel_id: str, api_key: str) -> Optional[Dict]:
     )
     top5_playlists = playlists_sorted[:5]
     while len(top5_playlists) < 5:
-        top5_playlists.append({"title": "-", "itemCount": 0})
+        top5_playlists.append({"title": "", "itemCount": 0})
 
     playlist_cols: List[str] = []
     for pl in top5_playlists:
         title = (pl.get("title", "") or "").replace("\n", " ").strip()
         item_count = pl.get("itemCount", 0)
-        if title == "-" and item_count == 0:
-            playlist_cols.append("-")
+        if title == "" and item_count == 0:
+            playlist_cols.append("")
         else:
             playlist_cols.append(f"{title} ({item_count}本)")
 
@@ -1198,39 +1249,86 @@ def build_status_row(status: Dict) -> List:
     """
     Status シート1行分の配列を構成する。
     """
-    return [
-        status["data_date_str"],
-        status["channel_id"],
-        status["channel_title"],
-        status["subs"],
-        status["vids_total"],
-        status["views_total"],
-        status["channel_published_str"],
-        status["months_active"] if status["months_active"] is not None else "",
-        status["subs_per_month"],
-        status["subs_per_video"],
-        status["views_per_video"],
-        status["views_per_sub"],
-        status["subs_per_total_view"],
-        status["playlists_per_video"],
-        status["videos_per_month"],
-        status["videos_per_subscriber"],
-        *status["playlist_cols"],
-        status["total_views_last10"],
-        status["num_videos_last10"],
-        status["top_title_last10"],
-        status["top_views_last10"],
-        status["top_share_last10"],
-        status["avg_views_per_video_last10"],
-        status["views_per_sub_last10"],
-        status["total_views_last30"],
-        status["num_videos_last30"],
-        status["top_title_last30"],
-        status["top_views_last30"],
-        status["top_share_last30"],
-        status["avg_views_per_video_last30"],
-        status["views_per_sub_last30"],
+    playlist_cols = pad_list(status.get("playlist_cols", []), 5, default="")
+    playlist_cols = [safe_text(v, default="") for v in playlist_cols]
+    row = [
+        safe_text(status.get("data_date_str")),
+        safe_text(status.get("channel_id")),
+        safe_text(status.get("channel_title")),
+        safe_number(status.get("subs")),
+        safe_number(status.get("vids_total")),
+        safe_number(status.get("views_total")),
+        safe_text(status.get("channel_published_str")),
+        safe_number(status.get("months_active")),
+        safe_number(status.get("subs_per_month")),
+        safe_number(status.get("subs_per_video")),
+        safe_number(status.get("views_per_video")),
+        safe_number(status.get("views_per_sub")),
+        safe_number(status.get("subs_per_total_view")),
+        safe_number(status.get("playlists_per_video")),
+        safe_number(status.get("videos_per_month")),
+        safe_number(status.get("videos_per_subscriber")),
+        *playlist_cols,
+        safe_number(status.get("total_views_last10")),
+        safe_number(status.get("num_videos_last10")),
+        safe_text(status.get("top_title_last10")),
+        safe_number(status.get("top_views_last10")),
+        safe_number(status.get("top_share_last10")),
+        safe_number(status.get("avg_views_per_video_last10")),
+        safe_number(status.get("views_per_sub_last10")),
+        safe_number(status.get("total_views_last30")),
+        safe_number(status.get("num_videos_last30")),
+        safe_text(status.get("top_title_last30")),
+        safe_number(status.get("top_views_last30")),
+        safe_number(status.get("top_share_last30")),
+        safe_number(status.get("avg_views_per_video_last30")),
+        safe_number(status.get("views_per_sub_last30")),
     ]
+    validate_status_row(row)
+    return row
+
+
+def run_status_row_validation_examples() -> List[int]:
+    """列ズレ検知用の簡易検証。すべて len(STATUS_HEADER) を返すこと。"""
+    base = {
+        "data_date_str": "2026/01/01",
+        "channel_id": "UC_TEST",
+        "channel_title": "test",
+        "subs": 0,
+        "vids_total": 0,
+        "views_total": 0,
+        "channel_published_str": "",
+        "months_active": None,
+        "subs_per_month": None,
+        "subs_per_video": None,
+        "views_per_video": None,
+        "views_per_sub": None,
+        "subs_per_total_view": None,
+        "playlists_per_video": 0,
+        "videos_per_month": None,
+        "videos_per_subscriber": None,
+        "playlist_cols": [],
+        "total_views_last10": 0,
+        "num_videos_last10": 0,
+        "top_title_last10": None,
+        "top_views_last10": None,
+        "top_share_last10": None,
+        "avg_views_per_video_last10": None,
+        "views_per_sub_last10": None,
+        "total_views_last30": 0,
+        "num_videos_last30": 0,
+        "top_title_last30": None,
+        "top_views_last30": None,
+        "top_share_last30": None,
+        "avg_views_per_video_last30": None,
+        "views_per_sub_last30": None,
+    }
+    cases = [
+        dict(base, playlists_per_video=0, playlist_cols=[]),
+        dict(base, playlist_cols=["A(1本)", "B(2本)", "C(3本)"]),
+        dict(base, subs=None),
+    ]
+    return [len(build_status_row(case)) for case in cases]
 
 
 def build_status_summary_text(status: Dict) -> str:
