@@ -20,6 +20,7 @@ function onOpen() {
     .addItem('月次サマリ更新（Status → 月単位）', 'buildMonthlySummaryFromStatus')
     .addItem('type 別集計更新（summary → type 別）', 'buildTypeAnalyticsFromSummary')
     .addItem('成長プロファイル更新', 'buildGrowthProfileFromSummary')
+    .addItem('週間チャンネル概況更新', 'buildWeeklyChannelOverview')
     .addToUi();
 }
 
@@ -409,6 +410,524 @@ function parseNoteToLogs_(note) {
 /**
  * 成長パターン分類
  */
+
+/**
+ * ヘッダー行から、ヘッダー名 -> 0始まり列indexのマップを返します。
+ */
+function getHeaderIndexMap_(headerRow) {
+  const map = {};
+  if (!headerRow || !headerRow.length) return map;
+
+  for (let i = 0; i < headerRow.length; i++) {
+    const key = headerRow[i] != null ? String(headerRow[i]).trim() : '';
+    if (!key) continue;
+    if (map[key] == null) map[key] = i;
+  }
+  return map;
+}
+
+/**
+ * 必須ヘッダー不足を検出し、不足があれば例外を投げます。
+ */
+function requireHeaders_(headerMap, requiredHeaders, sheetName) {
+  const missing = [];
+  for (let i = 0; i < requiredHeaders.length; i++) {
+    const h = requiredHeaders[i];
+    if (headerMap[h] == null) missing.push(h);
+  }
+  if (missing.length > 0) {
+    throw new Error('シート「' + sheetName + '」の必須ヘッダー不足: ' + missing.join(', '));
+  }
+}
+
+/**
+ * 概況計算向けの安全な数値変換。
+ */
+function toNumberForOverview_(value) {
+  if (value === 0) return 0;
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') return isFinite(value) ? value : null;
+
+  const s = String(value).replace(/,/g, '').trim();
+  if (!s) return null;
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 片側がnullなら空欄、両方あれば差分を返します。
+ */
+function safeDiffForOverview_(latest, base) {
+  if (latest == null || base == null) return '';
+  return latest - base;
+}
+
+/**
+ * 安全な率計算。計算不能なら空欄。
+ */
+function safeRateForOverview_(numerator, denominator) {
+  if (numerator == null || numerator === '') return '';
+  if (denominator == null || denominator === '' || denominator === 0) return '';
+  return numerator / denominator;
+}
+
+/**
+ * タイトル比較用に正規化します。
+ */
+function normalizeTitleForMatch_(title) {
+  if (title == null) return '';
+  let s = String(title);
+
+  const hm = s.match(/HYPERLINK\(\s*"[^"]*"\s*,\s*"([^"]*)"\s*\)/i);
+  if (hm && hm[1]) s = hm[1];
+
+  s = s.replace(/\r\n|\r|\n/g, ' ');
+  s = s.replace(/　/g, ' ');
+  s = s.trim().replace(/\s+/g, ' ').toLowerCase();
+  return s;
+}
+
+/**
+ * summary行を正規化タイトルで探索（完全一致優先、次に包含一致）。
+ */
+function findSummaryRowByTitle_(summaryRows, summaryHeaderMap, title) {
+  const titleIdx = summaryHeaderMap.title;
+  const viewIdx = summaryHeaderMap.last_view_count;
+  const target = normalizeTitleForMatch_(title);
+  if (!target) return null;
+
+  const exact = [];
+  const loose = [];
+
+  for (let i = 0; i < summaryRows.length; i++) {
+    const row = summaryRows[i];
+    const rowTitle = row[titleIdx];
+    const norm = normalizeTitleForMatch_(rowTitle);
+    if (!norm) continue;
+
+    const item = {
+      row: row,
+      rowIndex: i,
+      title: rowTitle != null ? String(rowTitle) : '',
+      lastViewCount: toNumberForOverview_(row[viewIdx])
+    };
+
+    if (norm === target) {
+      exact.push(item);
+    } else if (norm.indexOf(target) >= 0 || target.indexOf(norm) >= 0) {
+      loose.push(item);
+    }
+  }
+
+  function pickMax_(arr) {
+    if (!arr || arr.length === 0) return null;
+    arr.sort(function(a, b) {
+      const av = a.lastViewCount != null ? a.lastViewCount : -1;
+      const bv = b.lastViewCount != null ? b.lastViewCount : -1;
+      return bv - av;
+    });
+    return arr[0];
+  }
+
+  return pickMax_(exact) || pickMax_(loose);
+}
+
+/**
+ * targetDate以前で最も近いログを返します。
+ */
+function getNearestLogAtOrBefore_(logs, targetDate, tz) {
+  if (!logs || logs.length === 0 || !targetDate) return null;
+  const t = targetDate.getTime();
+  let nearest = null;
+
+  for (let i = 0; i < logs.length; i++) {
+    const log = logs[i];
+    if (!log || !log.date) continue;
+    const ts = log.date.getTime();
+    if (isNaN(ts) || ts > t) continue;
+    if (!nearest || ts > nearest.date.getTime()) nearest = log;
+  }
+
+  return nearest;
+}
+
+/**
+ * summaryのタイトル一致動画について、7日再生増分を計算します。
+ */
+function calcVideoSevenDayViewDeltaByTitle_(summaryIndex, title, latestStatusDate, tz) {
+  const result = {
+    found: false,
+    delta: '',
+    matchedTitle: '',
+    reason: ''
+  };
+
+  if (!summaryIndex || !summaryIndex.exists) {
+    result.reason = 'summary_missing';
+    return result;
+  }
+
+  if (!title) {
+    result.reason = 'title_empty';
+    return result;
+  }
+
+  const match = findSummaryRowByTitle_(summaryIndex.rows, summaryIndex.headerMap, title);
+  if (!match) {
+    result.reason = 'top_video_not_found';
+    return result;
+  }
+
+  result.found = true;
+  result.matchedTitle = match.title;
+
+  const row = match.row;
+  const hm = summaryIndex.headerMap;
+  const note = row[hm.note];
+  const logs = parseNoteToLogs_(note);
+
+  const latestLogFromNote = getNearestLogAtOrBefore_(logs, latestStatusDate, tz);
+  let latestVideoLog = latestLogFromNote;
+
+  if (!latestVideoLog) {
+    const fallbackDate = toDate_(row[hm.last_logged_at]);
+    const fallbackViews = toNumberForOverview_(row[hm.last_view_count]);
+    if (fallbackDate && fallbackViews != null) {
+      latestVideoLog = { date: fallbackDate, views: fallbackViews, likes: 0, comments: 0 };
+    }
+  }
+
+  const baseDate = new Date(latestStatusDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const baseVideoLog = getNearestLogAtOrBefore_(logs, baseDate, tz);
+
+  if (!latestVideoLog) {
+    result.reason = 'latest_video_log_missing';
+    return result;
+  }
+
+  if (!baseVideoLog) {
+    result.reason = 'base_video_log_missing';
+    return result;
+  }
+
+  const diff = latestVideoLog.views - baseVideoLog.views;
+  if (diff < 0) {
+    result.reason = 'negative_delta';
+    return result;
+  }
+
+  result.delta = diff;
+  return result;
+}
+
+/**
+ * 週間概況の勢いラベルを判定します。
+ */
+function classifyWeeklyOverview_(metrics) {
+  if (!metrics.hasBase) return 'データ不足';
+
+  const viewsDiff = metrics.viewsDiff != null && metrics.viewsDiff !== '' ? metrics.viewsDiff : null;
+  const subsDiff = metrics.subsDiff != null && metrics.subsDiff !== '' ? metrics.subsDiff : null;
+
+  if (viewsDiff != null && viewsDiff <= 0) return '横ばい';
+
+  const rate = metrics.topContributionRate;
+  if (rate != null && rate !== '' && viewsDiff != null && viewsDiff > 0) {
+    if (rate >= 0.80) return '単発バズ型';
+    if (rate >= 0.50) return 'ヒット依存型';
+    if (rate >= 0.25) return '一部ヒットあり';
+    return '分散安定型';
+  }
+
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff > 0) return '好調';
+  if (viewsDiff != null && viewsDiff > 0 && subsDiff != null && subsDiff <= 0) return '再生先行';
+  return '通常';
+}
+
+/**
+ * 週間概況メモを作ります。
+ */
+function buildWeeklyOverviewMemo_(metrics) {
+  if (!metrics.hasBase) return '比較基準データ不足。';
+  if (metrics.summaryMissing) return 'summary未作成のためトップ動画寄与は未判定。';
+  if (metrics.topVideoNotFound) return 'トップ動画履歴が見つからないため寄与率は未判定。';
+
+  const rate = metrics.topContributionRate;
+  const viewsDiff = metrics.viewsDiff;
+  const subsDiff = metrics.subsDiff;
+  const uploadsDiff = metrics.uploadsDiff;
+
+  if (rate !== '' && rate != null) {
+    if (rate >= 0.80) return '単一動画の寄与が非常に高いです。短期バズ寄りです。';
+    if (rate >= 0.50) return '特定動画が強く牽引しています。ヒット依存傾向です。';
+    if (rate >= 0.25) return '伸びている動画はありますが、全体にも再生が分散しています。';
+    if (rate < 0.25 && viewsDiff > 0) return '特定動画依存は低く、複数動画で堅実に伸びています。';
+  }
+
+  if (viewsDiff > 0 && subsDiff <= 0) return '再生は伸びていますが、登録増は弱めです。';
+  if (uploadsDiff === 0 && viewsDiff > 0) return '投稿なしでも再生増あり。過去動画が動いている可能性があります。';
+  if (uploadsDiff > 0 && viewsDiff <= 0) return '投稿ありですが、反応は弱めです。';
+  return '通常推移です。';
+}
+
+/**
+ * Status / summary から週間チャンネル概況を作成します。
+ */
+function buildWeeklyChannelOverview() {
+  return runWithDocLock_(function() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ui = SpreadsheetApp.getUi();
+    const tz = ss.getSpreadsheetTimeZone() || 'Asia/Tokyo';
+
+    try {
+      const statusSheet = ss.getSheetByName('Status');
+      if (!statusSheet) {
+        throw new Error('Status シートが見つかりません。');
+      }
+
+      const statusValues = statusSheet.getDataRange().getValues();
+      if (!statusValues || statusValues.length === 0) {
+        throw new Error('Status シートにデータがありません。');
+      }
+
+      const statusHeaderMap = getHeaderIndexMap_(statusValues[0]);
+      const requiredStatusHeaders = [
+        '取得日時',
+        'チャンネルID',
+        'チャンネル名',
+        '登録者数',
+        '動画本数',
+        '総再生回数',
+        '直近10日トップ動画タイトル'
+      ];
+      requireHeaders_(statusHeaderMap, requiredStatusHeaders, 'Status');
+
+      const grouped = {};
+      for (let i = 1; i < statusValues.length; i++) {
+        const row = statusValues[i];
+        const channelIdRaw = row[statusHeaderMap['チャンネルID']];
+        const channelId = channelIdRaw != null ? String(channelIdRaw).trim() : '';
+        if (!channelId) continue;
+
+        const loggedAt = toDate_(row[statusHeaderMap['取得日時']]);
+        if (!loggedAt) continue;
+
+        if (!grouped[channelId]) grouped[channelId] = [];
+        grouped[channelId].push({ row: row, date: loggedAt, channelId: channelId });
+      }
+
+      const summarySheet = ss.getSheetByName('summary');
+      const summaryIndex = { exists: !!summarySheet, rows: [], headerMap: {} };
+      if (summarySheet) {
+        const summaryValues = summarySheet.getDataRange().getValues();
+        if (summaryValues && summaryValues.length > 0) {
+          const summaryHeaderMapRaw = getHeaderIndexMap_(summaryValues[0]);
+          requireHeaders_(summaryHeaderMapRaw, ['title', 'last_view_count', 'last_logged_at', 'note'], 'summary');
+          summaryIndex.headerMap = {
+            title: summaryHeaderMapRaw.title,
+            last_view_count: summaryHeaderMapRaw.last_view_count,
+            last_logged_at: summaryHeaderMapRaw.last_logged_at,
+            note: summaryHeaderMapRaw.note
+          };
+          summaryIndex.rows = summaryValues.slice(1);
+        }
+      }
+
+      const headers = [
+        '集計日',
+        'チャンネル名',
+        '登録者数',
+        '7日登録者増',
+        '7日再生増',
+        '7日投稿増',
+        '週間トップ動画',
+        'トップ動画7日再生増',
+        'トップ動画寄与率',
+        '勢い',
+        '投稿状況',
+        '傾向メモ'
+      ];
+
+      const momentumPriority = {
+        '単発バズ型': 1,
+        'ヒット依存型': 2,
+        '一部ヒットあり': 3,
+        '分散安定型': 4,
+        '好調': 5,
+        '再生先行': 6,
+        '通常': 7,
+        '横ばい': 8,
+        'データ不足': 9
+      };
+
+      const outputRows = [];
+      let dataShortageCount = 0;
+      let contributionComputedCount = 0;
+      let topVideoNotFoundCount = 0;
+
+      const channelIds = Object.keys(grouped);
+      for (let ci = 0; ci < channelIds.length; ci++) {
+        const channelId = channelIds[ci];
+        const items = grouped[channelId];
+        if (!items || items.length === 0) continue;
+
+        items.sort(function(a, b) { return a.date.getTime() - b.date.getTime(); });
+
+        const latest = items[items.length - 1];
+        const latestRow = latest.row;
+        const latestDate = latest.date;
+        const baseDate = new Date(latestDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+        let baseItem = null;
+        for (let bi = items.length - 1; bi >= 0; bi--) {
+          if (items[bi].date.getTime() <= baseDate.getTime()) {
+            baseItem = items[bi];
+            break;
+          }
+        }
+
+        const hasBase = !!baseItem;
+        if (!hasBase) dataShortageCount++;
+
+        const latestSubs = toNumberForOverview_(latestRow[statusHeaderMap['登録者数']]);
+        const latestUploads = toNumberForOverview_(latestRow[statusHeaderMap['動画本数']]);
+        const latestViews = toNumberForOverview_(latestRow[statusHeaderMap['総再生回数']]);
+
+        const baseRow = hasBase ? baseItem.row : null;
+        const baseSubs = hasBase ? toNumberForOverview_(baseRow[statusHeaderMap['登録者数']]) : null;
+        const baseUploads = hasBase ? toNumberForOverview_(baseRow[statusHeaderMap['動画本数']]) : null;
+        const baseViews = hasBase ? toNumberForOverview_(baseRow[statusHeaderMap['総再生回数']]) : null;
+
+        const subsDiff = safeDiffForOverview_(latestSubs, baseSubs);
+        const viewsDiff = safeDiffForOverview_(latestViews, baseViews);
+        const uploadsDiff = safeDiffForOverview_(latestUploads, baseUploads);
+
+        const topVideoTitleRaw = latestRow[statusHeaderMap['直近10日トップ動画タイトル']];
+        const topVideoTitle = topVideoTitleRaw != null ? String(topVideoTitleRaw).trim() : '';
+
+        let topVideoDelta = '';
+        let topContributionRate = '';
+        let topVideoNotFound = false;
+        let summaryMissing = !summaryIndex.exists;
+
+        if (summaryIndex.exists) {
+          const calc = calcVideoSevenDayViewDeltaByTitle_(summaryIndex, topVideoTitle, latestDate, tz);
+          if (calc.reason === 'top_video_not_found') {
+            topVideoNotFound = true;
+            topVideoNotFoundCount++;
+          }
+          if (calc.delta !== '' && calc.delta != null) {
+            topVideoDelta = calc.delta;
+          }
+          if (viewsDiff !== '' && viewsDiff != null && viewsDiff > 0 && topVideoDelta !== '' && topVideoDelta != null) {
+            topContributionRate = safeRateForOverview_(topVideoDelta, viewsDiff);
+            if (topContributionRate !== '' && topContributionRate != null) {
+              contributionComputedCount++;
+            }
+          }
+        }
+
+        const metrics = {
+          hasBase: hasBase,
+          summaryMissing: summaryMissing,
+          topVideoNotFound: topVideoNotFound,
+          subsDiff: subsDiff === '' ? null : subsDiff,
+          viewsDiff: viewsDiff === '' ? null : viewsDiff,
+          uploadsDiff: uploadsDiff === '' ? null : uploadsDiff,
+          topContributionRate: topContributionRate
+        };
+
+        const momentum = classifyWeeklyOverview_(metrics);
+        let postingStatus = '不明';
+        if (!hasBase) {
+          postingStatus = 'データ不足';
+        } else if (uploadsDiff >= 3) {
+          postingStatus = '投稿多め';
+        } else if (uploadsDiff >= 1) {
+          postingStatus = '投稿あり';
+        } else if (uploadsDiff === 0) {
+          postingStatus = '投稿なし';
+        }
+
+        const memo = buildWeeklyOverviewMemo_(metrics);
+
+        const outRow = [
+          Utilities.formatDate(latestDate, tz, 'yyyy/MM/dd'),
+          latestRow[statusHeaderMap['チャンネル名']] != null ? String(latestRow[statusHeaderMap['チャンネル名']]) : '',
+          latestSubs != null ? latestSubs : '',
+          subsDiff,
+          viewsDiff,
+          uploadsDiff,
+          topVideoTitle,
+          topVideoDelta,
+          topContributionRate,
+          momentum,
+          postingStatus,
+          memo
+        ];
+
+        outRow.__momentumPriority = momentumPriority[momentum] != null ? momentumPriority[momentum] : 99;
+        outRow.__viewsDiff = (viewsDiff !== '' && viewsDiff != null) ? viewsDiff : -Infinity;
+        outputRows.push(outRow);
+      }
+
+      outputRows.sort(function(a, b) {
+        if (a.__momentumPriority !== b.__momentumPriority) {
+          return a.__momentumPriority - b.__momentumPriority;
+        }
+        return b.__viewsDiff - a.__viewsDiff;
+      });
+
+      for (let i = 0; i < outputRows.length; i++) {
+        delete outputRows[i].__momentumPriority;
+        delete outputRows[i].__viewsDiff;
+      }
+
+      const outSheetName = '週間チャンネル概況';
+      let outSheet = ss.getSheetByName(outSheetName);
+      if (!outSheet) {
+        outSheet = ss.insertSheet(outSheetName);
+      } else {
+        outSheet.clear();
+      }
+
+      outSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      if (outputRows.length > 0) {
+        outSheet.getRange(2, 1, outputRows.length, headers.length).setValues(outputRows);
+      }
+
+      outSheet.setFrozenRows(1);
+      const oldFilter = outSheet.getFilter();
+      if (oldFilter) oldFilter.remove();
+      const usedRows = Math.max(1, outputRows.length + 1);
+      outSheet.getRange(1, 1, usedRows, headers.length).createFilter();
+
+      if (outputRows.length > 0) {
+        outSheet.getRange(2, 3, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 4, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 5, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 6, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 8, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 9, outputRows.length, 1).setNumberFormat('0.0%');
+      }
+
+      setBordersForUsedRange_(outSheet);
+
+      ui.alert(
+        '週間チャンネル概況を更新しました。\n' +
+        '出力チャンネル数: ' + outputRows.length + '\n' +
+        'データ不足件数: ' + dataShortageCount + '\n' +
+        'トップ動画寄与率算出件数: ' + contributionComputedCount + '\n' +
+        'トップ動画未一致件数: ' + topVideoNotFoundCount
+      );
+    } catch (err) {
+      appendErrorLog_(ss, 'buildWeeklyChannelOverview', 'main', err, {});
+      ui.alert('週間チャンネル概況更新でエラー: ' + (err && err.message ? err.message : err));
+      throw err;
+    }
+  }, 30000, ['週間チャンネル概況']);
+}
+
 function classifyGrowthPattern_(typeKey, r3, r7, r30, daysSince, totalViews, medianTotal) {
   const t = (typeKey || '').toLowerCase();
   const rr3 = (r3 != null) ? r3 : 0;
