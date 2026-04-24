@@ -713,6 +713,12 @@ function classifyWeeklyGrowthType_(metrics) {
   const hasPostingAccel = postingAccel != null;
   const hasSubsGrowthRate = subsGrowthRate != null;
 
+  if (uploadsDiff != null && uploadsDiff < 0 && viewsDiff != null && viewsDiff < 0 && subsDiff != null && subsDiff >= 0) return '整理後も登録維持型';
+  if (uploadsDiff != null && uploadsDiff < 0 && viewsDiff != null && viewsDiff < 0 && subsDiff != null && subsDiff < 0) return '整理影響注意型';
+  if (uploadsDiff != null && uploadsDiff < 0 && viewsDiff != null && viewsDiff >= 0 && subsDiff != null && subsDiff >= 0) return '動画整理型';
+  if (uploadsDiff != null && uploadsDiff < 0 && subsDiff != null && subsDiff < 0) return '整理影響注意型';
+  if (uploadsDiff != null && uploadsDiff < 0) return '動画整理型';
+
   if (uploadsDiff === 0 && viewsDiff != null && viewsDiff <= 0 && subsDiff != null && subsDiff <= 0) return '横ばい';
 
   if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ') return '単一動画登録牽引型';
@@ -750,6 +756,11 @@ function buildWeeklyOverviewMemo_(metrics) {
   const hasSubsGrowthRate = subsGrowthRate != null;
 
   if (!metrics.hasBase) return '比較基準データ不足です。';
+  if (uploadsDiff != null && uploadsDiff < 0 && viewsDiff != null && viewsDiff < 0 && subsDiff != null && subsDiff >= 0) return '動画本数と総再生回数が減少していますが、登録者数は維持されています。動画整理により、動画本数あたりの登録者効率が見かけ上上がっている可能性があります。';
+  if (uploadsDiff != null && uploadsDiff < 0 && viewsDiff != null && viewsDiff < 0 && subsDiff != null && subsDiff < 0) return '動画本数と総再生回数が減少し、登録者数も減少しています。動画整理の影響またはチャンネル全体の鈍化に注意が必要です。';
+  if (uploadsDiff != null && uploadsDiff < 0 && viewsDiff != null && viewsDiff >= 0 && subsDiff != null && subsDiff >= 0) return '動画本数は減少していますが、再生と登録者数は維持されています。削除または非公開化による整理が行われた可能性があります。';
+  if (uploadsDiff != null && uploadsDiff < 0 && subsDiff != null && subsDiff < 0) return '動画本数の減少とあわせて登録者数も減少しています。整理影響またはチャンネル全体の鈍化に注意が必要です。';
+  if (uploadsDiff != null && uploadsDiff < 0) return '動画本数が減少しています。削除または非公開化による整理が行われた可能性があります。';
   if (uploadsDiff === 0 && viewsDiff != null && viewsDiff <= 0 && subsDiff != null && subsDiff <= 0) return '投稿・再生・登録のいずれも大きな動きはありません。';
   if (subsDiff != null && subsDiff > 0 && viewsDiff != null && viewsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ') return '単一動画の伸びが登録者増につながっています。短期バズによる成長です。';
   if (subsDiff != null && subsDiff > 0 && hasTopContributionRate && topContributionRate >= 0.80 && topVideoBuzzLevel === 'バズ' && topVideoType === 'ショート推定') return 'ショート動画が大きく伸び、登録者増にもつながっています。';
@@ -840,6 +851,7 @@ function buildWeeklyChannelOverview() {
         '前回比再生増',
         '再生増/日',
         '前回比投稿増',
+        '削除・非公開推定本数',
         '投稿本数/日',
         '登録者増加率',
         '再生増加率',
@@ -858,23 +870,28 @@ function buildWeeklyChannelOverview() {
       ];
 
       const growthPriority = {
+        'ショート単発バズ型': 1,
         'ショートバズ登録増型': 1,
-        '通常動画ヒット登録増型': 1,
-        '単一動画登録牽引型': 1,
-        'ヒット牽引型': 2,
-        '堅実成長型': 2,
-        '投稿強化型': 2,
-        '登録成長型': 1,
-        '投稿加速型': 3,
-        '安定運用型': 3,
-        '再生先行型': 4,
-        '過去動画稼働型': 5,
-        '過去動画分散稼働型': 5,
-        '省エネ維持型': 6,
-        '投稿空振り型': 7,
-        '通常': 8,
-        '横ばい': 9,
-        'データ不足': 10
+        '通常動画ヒット型': 2,
+        '通常動画ヒット登録増型': 2,
+        '単一動画登録牽引型': 3,
+        '堅実成長型': 4,
+        '投稿強化型': 5,
+        'ヒット牽引型': 5,
+        '登録成長型': 5,
+        '整理影響注意型': 6,
+        '整理後も登録維持型': 7,
+        '動画整理型': 8,
+        '再生先行型': 9,
+        '投稿加速型': 10,
+        '投稿空振り型': 11,
+        '過去動画稼働型': 12,
+        '過去動画分散稼働型': 13,
+        '安定運用型': 14,
+        '省エネ維持型': 15,
+        '横ばい': 16,
+        'データ不足': 17,
+        '通常': 18
       };
 
       const outputRows = [];
@@ -882,6 +899,7 @@ function buildWeeklyChannelOverview() {
       let statusMeasuredCount = 0;
       let statusEstimatedCount = 0;
       let undeterminedCount = 0;
+      let cleanupDetectedCount = 0;
       const channelIds = Object.keys(grouped);
       for (let ci = 0; ci < channelIds.length; ci++) {
         const channelId = channelIds[ci];
@@ -920,6 +938,7 @@ function buildWeeklyChannelOverview() {
         const subsDiff = safeDiffForOverview_(latestSubs, baseSubs);
         const viewsDiff = safeDiffForOverview_(latestViews, baseViews);
         const uploadsDiff = safeDiffForOverview_(latestUploads, baseUploads);
+        const estimatedRemovedCount = (uploadsDiff !== '' && uploadsDiff != null && uploadsDiff < 0) ? Math.abs(uploadsDiff) : '';
 
         const viewsPerDay = (compareDays !== '' && compareDays > 0 && viewsDiff !== '' && viewsDiff != null)
           ? (viewsDiff / compareDays)
@@ -936,6 +955,9 @@ function buildWeeklyChannelOverview() {
         const postingAcceleration = safeRateForOverview_(recentUploadsPerMonth, cumulativeUploadsPerMonth);
         const subsGrowthRate = safeRateForOverview_(subsDiff, latestSubs);
         const viewsGrowthRate = safeRateForOverview_(viewsDiff, latestViews);
+        const latestSubsPerVideo = (latestSubs != null && latestUploads != null && latestUploads > 0) ? (latestSubs / latestUploads) : null;
+        const baseSubsPerVideo = (baseSubs != null && baseUploads != null && baseUploads > 0) ? (baseSubs / baseUploads) : null;
+        const subsPerVideoEfficiencyDiff = (latestSubsPerVideo != null && baseSubsPerVideo != null) ? (latestSubsPerVideo - baseSubsPerVideo) : null;
 
         const topVideoTitleRaw = latestRow[statusHeaderMap['直近10日トップ動画タイトル']];
         const topVideoTitle = topVideoTitleRaw != null ? String(topVideoTitleRaw).trim() : '';
@@ -1000,7 +1022,11 @@ function buildWeeklyChannelOverview() {
           topContributionRate: topContributionRate === '' ? null : topContributionRate,
           topVideoType: topVideoType,
           topVideoBuzzLevel: topVideoBuzzLevel,
-          contributionMethod: contributionMethod
+          contributionMethod: contributionMethod,
+          estimatedRemovedCount: estimatedRemovedCount === '' ? null : estimatedRemovedCount,
+          latestSubsPerVideo: latestSubsPerVideo,
+          baseSubsPerVideo: baseSubsPerVideo,
+          subsPerVideoEfficiencyDiff: subsPerVideoEfficiencyDiff
         };
 
         const growthType = classifyWeeklyGrowthType_(metrics);
@@ -1009,6 +1035,9 @@ function buildWeeklyChannelOverview() {
         let postingStatus = '不明';
         if (!hasBase) {
           postingStatus = 'データ不足';
+        } else if (uploadsDiff !== '' && uploadsDiff != null && uploadsDiff < 0) {
+          postingStatus = '動画整理';
+          cleanupDetectedCount++;
         } else if (uploadsPerDay !== '' && uploadsPerDay != null && uploadsPerDay >= 1.0) {
           postingStatus = '投稿多め';
         } else if (uploadsPerDay !== '' && uploadsPerDay != null && uploadsPerDay > 0) {
@@ -1028,6 +1057,7 @@ function buildWeeklyChannelOverview() {
           viewsDiff,
           viewsPerDay,
           uploadsDiff,
+          estimatedRemovedCount,
           uploadsPerDay,
           subsGrowthRate,
           viewsGrowthRate,
@@ -1088,14 +1118,15 @@ function buildWeeklyChannelOverview() {
         outSheet.getRange(2, 6, outputRows.length, 1).setNumberFormat('#,##0');
         outSheet.getRange(2, 7, outputRows.length, 1).setNumberFormat('#,##0');
         outSheet.getRange(2, 8, outputRows.length, 1).setNumberFormat('#,##0');
-        outSheet.getRange(2, 9, outputRows.length, 1).setNumberFormat('0.0');
-        outSheet.getRange(2, 10, outputRows.length, 1).setNumberFormat('0.0%');
+        outSheet.getRange(2, 9, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 10, outputRows.length, 1).setNumberFormat('0.0');
         outSheet.getRange(2, 11, outputRows.length, 1).setNumberFormat('0.0%');
-        outSheet.getRange(2, 12, outputRows.length, 1).setNumberFormat('0.0');
+        outSheet.getRange(2, 12, outputRows.length, 1).setNumberFormat('0.0%');
         outSheet.getRange(2, 13, outputRows.length, 1).setNumberFormat('0.0');
-        outSheet.getRange(2, 16, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 14, outputRows.length, 1).setNumberFormat('0.0');
         outSheet.getRange(2, 17, outputRows.length, 1).setNumberFormat('#,##0');
-        outSheet.getRange(2, 18, outputRows.length, 1).setNumberFormat('0.0%');
+        outSheet.getRange(2, 18, outputRows.length, 1).setNumberFormat('#,##0');
+        outSheet.getRange(2, 19, outputRows.length, 1).setNumberFormat('0.0%');
       }
 
       setBordersForUsedRange_(outSheet);
@@ -1104,6 +1135,7 @@ function buildWeeklyChannelOverview() {
         '週間チャンネル概況を更新しました。\n' +
         '出力チャンネル数: ' + outputRows.length + '\n' +
         'データ不足件数: ' + dataShortageCount + '\n' +
+        '動画整理検知件数: ' + cleanupDetectedCount + '\n' +
         'Status実測件数: ' + statusMeasuredCount + '\n' +
         'Status推定件数: ' + statusEstimatedCount + '\n' +
         '未判定件数: ' + undeterminedCount
