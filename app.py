@@ -836,7 +836,8 @@ def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
         published_str = ""
 
     view_count = int(stats.get("viewCount", 0) or 0)
-    like_count = int(stats.get("likeCount", 0) or 0)
+    like_count_raw = stats.get("likeCount")
+    like_count = int(like_count_raw) if like_count_raw is not None else ""
     # commentCount は既存の videos.list 応答を利用する（追加API呼び出しはしない）
     comment_count_raw = stats.get("commentCount")
     comment_count = int(comment_count_raw) if comment_count_raw is not None else ""
