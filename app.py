@@ -674,6 +674,7 @@ def extract_video_id_from_title_cell(title_cell: str) -> Optional[str]:
 
 def legacy_fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) -> List[Dict]:
     """
+    NOTE: Status 系の旧ロジック互換用。record取得の通常経路では使用しない。
     チャンネルのアップロード済み動画（公開・処理済・アーカイブ済みのみ）を
     公開日時の古い順に max_results 件まで取得。
     """
@@ -781,6 +782,7 @@ def legacy_fetch_channel_upload_items(channel_id: str, max_results: int, api_key
 
 def legacy_fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
     """
+    NOTE: 旧実装の単体動画確認用。record取得の通常経路では使用しない。
     指定 videoId の動画を1件取得（公開・処理済み・アーカイブのみ）。
     """
     youtube = get_youtube_client(api_key)
@@ -817,6 +819,7 @@ def legacy_fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict
 
 def legacy_build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
     """
+    NOTE: 旧 row 変換処理。record取得の通常経路では使用しない。
     video API の item から record シート1行分を構成。
     """
     snippet = item.get("snippet", {}) or {}
@@ -874,6 +877,18 @@ def legacy_build_record_row_from_video_item(item: Dict, logged_at_str: str) -> L
         comment_count,
     ]
 
+
+
+
+def fetch_record_rows_via_core(api_key: str, channel_id: str, max_results: int = 50):
+    """record取得を core 経由で実行し、追記用 rows と診断情報を返す。"""
+    yt = get_youtube_client(api_key)
+    ids = fetch_upload_video_ids(yt, channel_id, max_results=max_results)
+    by_id = fetch_videos_bulk(yt, ids)
+    items = filter_recordable_video_items([by_id[v] for v in ids if v in by_id], max_results=max_results)
+    now_jst = datetime.now(JST)
+    logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
+    return build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
 
 def fetch_comment_counts(video_ids: List[str], api_key: str) -> Dict[str, str]:
     """videos.list(part=statistics) だけでコメント数をまとめて取得する。"""
@@ -1513,20 +1528,15 @@ def run_routine_job(api_key: str) -> Dict:
     ws_record = get_record_worksheet()
     ws_status = get_status_worksheet()
 
-    record_items = legacy_fetch_channel_upload_items(
-        ROUTINE_RECORD_CHANNEL_ID,
-        max_results=50,
+    record_rows, _ = fetch_record_rows_via_core(
         api_key=api_key,
+        channel_id=ROUTINE_RECORD_CHANNEL_ID,
+        max_results=50,
     )
 
     record_count = 0
-    if record_items:
-        logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
-        record_rows = [
-            legacy_build_record_row_from_video_item(it, logged_at_str)
-            for it in record_items
-        ]
-        append_rows(ws_record, record_rows)
+    if record_rows:
+        shared_append_rows(ws_record, record_rows)
         record_count = len(record_rows)
         refresh_record_comment_counts(ws_record, api_key)
 
@@ -1665,20 +1675,15 @@ def render_streamlit_app():
                 ws_record = get_record_worksheet()
                 ws_status = get_status_worksheet()
                 with st.spinner("ルーティンを実行中..."):
-                    record_items = legacy_fetch_channel_upload_items(
-                        ROUTINE_RECORD_CHANNEL_ID,
-                        max_results=50,
+                    record_rows, _ = fetch_record_rows_via_core(
                         api_key=api_key,
+                        channel_id=ROUTINE_RECORD_CHANNEL_ID,
+                        max_results=50,
                     )
 
                     record_count = 0
-                    if record_items:
-                        logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
-                        record_rows = [
-                            legacy_build_record_row_from_video_item(it, logged_at_str)
-                            for it in record_items
-                        ]
-                        append_rows(ws_record, record_rows)
+                    if record_rows:
+                        shared_append_rows(ws_record, record_rows)
                         record_count = len(record_rows)
                         refresh_record_comment_counts(ws_record, api_key)
 
@@ -1724,8 +1729,17 @@ def render_streamlit_app():
                             else:
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                                rows, _ = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
+                                rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
                                 shared_append_rows(ws_record, rows)
+                                st.caption("record取得診断")
+                                st.json({
+                                    "videos.list bulk count": diag.get("videos_list_bulk_count", 0),
+                                    "likeCount missing initial": diag.get("like_count_missing_initial", 0),
+                                    "fallback success": diag.get("fallback_success", 0),
+                                    "fallback missing": diag.get("fallback_missing", 0),
+                                    "record rows planned": diag.get("record_rows_planned", 0),
+                                    "record rows appended": len(rows),
+                                })
                                 updated_count = refresh_record_comment_counts(ws_record, api_key)
                                 st.success(
                                     f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
@@ -1745,8 +1759,17 @@ def render_streamlit_app():
                             else:
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                                rows, _ = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
+                                rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
                                 shared_append_rows(ws_record, rows)
+                                st.caption("record取得診断")
+                                st.json({
+                                    "videos.list bulk count": diag.get("videos_list_bulk_count", 0),
+                                    "likeCount missing initial": diag.get("like_count_missing_initial", 0),
+                                    "fallback success": diag.get("fallback_success", 0),
+                                    "fallback missing": diag.get("fallback_missing", 0),
+                                    "record rows planned": diag.get("record_rows_planned", 0),
+                                    "record rows appended": len(rows),
+                                })
                                 updated_count = refresh_record_comment_counts(ws_record, api_key)
                                 st.success(
                                     f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
