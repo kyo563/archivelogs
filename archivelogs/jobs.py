@@ -30,6 +30,7 @@ def fetch_channel_upload_items(youtube, channel_id, max_results=50):
     return sorted(out,key=lambda x:(x.get("snippet",{}).get("publishedAt") or ""))[:max_results]
 
 def _build_status_row(youtube, channel_id):
+    # NOTE: Status詳細指標は暫定的に簡略化（旧 app.py の全分析列とは完全同等ではありません）
     r=youtube.channels().list(part="snippet,statistics",id=channel_id,maxResults=1).execute().get("items",[])
     if not r:return None
     it=r[0]; sn=it.get("snippet") or {}; st=it.get("statistics") or {}
@@ -57,4 +58,4 @@ def run_daily_auto_jobs(api_key:str,batch_limit:int=30):
         if row: batch.append(row); ok.append(cid)
         else: ng.append(cid)
     if batch: append_rows(ws_status,batch)
-    return {"routine":{"record_count":len(rows),"status_count":len(routine_status),"failed_status_ids":failed},"status_batch":{"picked_count":len(picked),"ok_items":ok,"ng_items":ng,"filled_count":0},"diag":diag}
+    return {"routine":{"record_count":len(rows),"status_count":len(routine_status),"failed_status_ids":failed},"status_batch":{"picked_count":len(picked),"ok_items":ok,"ng_items":ng,"filled_count":0},"diag":diag,"record_target_count":len(video_ids)}
