@@ -198,3 +198,25 @@ def test_append_record_rows_if_needed_non_dry_run_calls_append(monkeypatch):
     assert called["append"] == 1
     assert appended == 2
     assert updated == 3
+
+
+def test_append_record_rows_if_needed_empty_rows_has_no_side_effects(monkeypatch):
+    app = importlib.import_module("app")
+    called = {"ws": 0, "append": 0, "refresh": 0}
+
+    monkeypatch.setattr("app.get_record_worksheet", lambda: called.__setitem__("ws", called["ws"] + 1))
+    monkeypatch.setattr("app.shared_append_rows", lambda *_: called.__setitem__("append", called["append"] + 1))
+    monkeypatch.setattr("app.refresh_record_comment_counts", lambda *_: called.__setitem__("refresh", called["refresh"] + 1))
+
+    appended, updated = app.append_record_rows_if_needed("dummy", [], dry_run=False)
+    assert appended == 0 and updated == 0
+    assert called == {"ws": 0, "append": 0, "refresh": 0}
+
+
+def test_daily_auto_fetch_workflow_dispatch_has_dry_run_input():
+    text = Path(".github/workflows/daily-auto-fetch.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in text
+    assert "inputs:" in text
+    assert "dry_run:" in text
+    assert 'default: "true"' in text
+    assert '--dry-run' in text

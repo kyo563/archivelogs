@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 23 * * *' # JST 08:00
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without writing to Sheets"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 jobs:
   auto-fetch:
@@ -35,4 +44,9 @@ jobs:
           test -n "${GCP_SERVICE_ACCOUNT_JSON}" && echo "GCP_SERVICE_ACCOUNT_JSON=present" || (echo "GCP_SERVICE_ACCOUNT_JSON=missing" && exit 1)
 
       - name: Run daily auto fetch
-        run: python -m scripts.run_daily_auto_fetch
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            python -m scripts.run_daily_auto_fetch --dry-run
+          else
+            python -m scripts.run_daily_auto_fetch
+          fi
