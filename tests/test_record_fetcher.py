@@ -1,5 +1,5 @@
 from archivelogs.record_fetcher import *
-from archivelogs import youtube_client
+
 
 def test_like_exists(): assert parse_stat_value({"likeCount":"12"},"likeCount")==12
 def test_like_zero(): assert parse_stat_value({"likeCount":"0"},"likeCount")==0
@@ -27,3 +27,11 @@ def test_fallback_missing(monkeypatch):
     monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_item', lambda y,vid:None)
     rows,diag=build_rows_with_like_fallback(None,["abcdefghijk"],"2026/01/01 00:00:00")
     assert rows[0][6]=="" and diag["missing_final"]==1
+
+def test_filter_recordable_video_items():
+    items=[
+        {"id":"1","snippet":{"publishedAt":"2026-01-01T00:00:00Z","liveBroadcastContent":"none"},"status":{"privacyStatus":"public","uploadStatus":"processed"}},
+        {"id":"2","snippet":{"publishedAt":"2026-01-02T00:00:00Z","liveBroadcastContent":"live"},"status":{"privacyStatus":"public","uploadStatus":"processed"}},
+    ]
+    out=filter_recordable_video_items(items)
+    assert [x["id"] for x in out]==["1"]
