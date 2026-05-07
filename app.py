@@ -19,6 +19,14 @@ from streamlit.errors import StreamlitSecretNotFoundError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
+from archivelogs.record_fetcher import (
+    build_rows_from_video_items_with_like_fallback,
+    fetch_upload_video_ids,
+    filter_recordable_video_items,
+    resolve_video_id as rf_resolve_video_id,
+)
+from archivelogs.sheets import append_rows as shared_append_rows
+from archivelogs.youtube_client import fetch_videos_bulk
 
 # ====================================
 # 共通設定
@@ -657,7 +665,7 @@ def extract_video_id_from_title_cell(title_cell: str) -> Optional[str]:
 # record 用 YouTube処理
 # ====================================
 
-def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) -> List[Dict]:
+def legacy_fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) -> List[Dict]:
     """
     チャンネルのアップロード済み動画（公開・処理済・アーカイブ済みのみ）を
     公開日時の古い順に max_results 件まで取得。
@@ -764,7 +772,7 @@ def fetch_channel_upload_items(channel_id: str, max_results: int, api_key: str) 
     return filtered_sorted[:max_results]
 
 
-def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
+def legacy_fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
     """
     指定 videoId の動画を1件取得（公開・処理済み・アーカイブのみ）。
     """
@@ -800,7 +808,7 @@ def fetch_single_video_item(video_id: str, api_key: str) -> Optional[Dict]:
     return it
 
 
-def build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
+def legacy_build_record_row_from_video_item(item: Dict, logged_at_str: str) -> List:
     """
     video API の item から record シート1行分を構成。
     """
@@ -1498,7 +1506,7 @@ def run_routine_job(api_key: str) -> Dict:
     ws_record = get_record_worksheet()
     ws_status = get_status_worksheet()
 
-    record_items = fetch_channel_upload_items(
+    record_items = legacy_fetch_channel_upload_items(
         ROUTINE_RECORD_CHANNEL_ID,
         max_results=50,
         api_key=api_key,
@@ -1508,7 +1516,7 @@ def run_routine_job(api_key: str) -> Dict:
     if record_items:
         logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
         record_rows = [
-            build_record_row_from_video_item(it, logged_at_str)
+            legacy_build_record_row_from_video_item(it, logged_at_str)
             for it in record_items
         ]
         append_rows(ws_record, record_rows)
@@ -1650,7 +1658,7 @@ def render_streamlit_app():
                 ws_record = get_record_worksheet()
                 ws_status = get_status_worksheet()
                 with st.spinner("ルーティンを実行中..."):
-                    record_items = fetch_channel_upload_items(
+                    record_items = legacy_fetch_channel_upload_items(
                         ROUTINE_RECORD_CHANNEL_ID,
                         max_results=50,
                         api_key=api_key,
@@ -1660,7 +1668,7 @@ def render_streamlit_app():
                     if record_items:
                         logged_at_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
                         record_rows = [
-                            build_record_row_from_video_item(it, logged_at_str)
+                            legacy_build_record_row_from_video_item(it, logged_at_str)
                             for it in record_items
                         ]
                         append_rows(ws_record, record_rows)
@@ -1696,19 +1704,21 @@ def render_streamlit_app():
                     input_mode = determine_record_input_mode(record_input)
 
                     if input_mode == "video":
-                        vid = resolve_video_id(record_input)
+                        vid = rf_resolve_video_id(record_input)
                         if not vid:
                             st.error("動画IDを解決できませんでした。URLを確認してください。")
                         else:
                             with st.spinner("動画情報を取得中..."):
-                                item = fetch_single_video_item(vid, api_key)
-                            if not item:
+                                yt = get_youtube_client(api_key)
+                                by_id = fetch_videos_bulk(yt, [vid])
+                                items = filter_recordable_video_items([by_id[vid]] if vid in by_id else [], max_results=1)
+                            if not items:
                                 st.error("指定した動画が取得できませんでした（非公開・処理中・ライブ中などの可能性）。")
                             else:
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                                row = build_record_row_from_video_item(item, logged_at_str)
-                                append_rows(ws_record, [row])
+                                rows, _ = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
+                                shared_append_rows(ws_record, rows)
                                 updated_count = refresh_record_comment_counts(ws_record, api_key)
                                 st.success(
                                     f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
@@ -1719,19 +1729,17 @@ def render_streamlit_app():
                         if not channel_id:
                             st.error("チャンネルIDを解決できませんでした。入力内容を確認してください。")
                         else:
-                            items = fetch_channel_upload_items(
-                                channel_id, max_results=50, api_key=api_key
-                            )
+                            yt = get_youtube_client(api_key)
+                            ids = fetch_upload_video_ids(yt, channel_id, max_results=50)
+                            by_id = fetch_videos_bulk(yt, ids)
+                            items = filter_recordable_video_items([by_id[v] for v in ids if v in by_id], max_results=50)
                             if not items:
                                 st.warning("取得できる動画がありませんでした。")
                             else:
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
-                                rows = [
-                                    build_record_row_from_video_item(it, logged_at_str)
-                                    for it in items
-                                ]
-                                append_rows(ws_record, rows)
+                                rows, _ = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
+                                shared_append_rows(ws_record, rows)
                                 updated_count = refresh_record_comment_counts(ws_record, api_key)
                                 st.success(
                                     f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
