@@ -9,9 +9,15 @@ def main() -> int:
     result = run_daily_auto_jobs(api_key=api_key, batch_limit=batch_limit)
     routine = result["routine"]
     status_batch = result["status_batch"]
+    diag = result.get("diag", {})
     print("[daily-auto-fetch] 完了")
     print(f"- routine: Record {routine['record_count']}件 / Status {routine['status_count']}件")
     print(f"- status_batch: 対象 {status_batch['picked_count']}件 / 成功 {len(status_batch['ok_items'])}件 / 失敗 {len(status_batch['ng_items'])}件")
+    print(f"[daily-auto-fetch] record target count={result.get('record_target_count', 0)}")
+    print(f"[daily-auto-fetch] videos.list bulk count={diag.get('bulk_count', 0)}")
+    print(f"[daily-auto-fetch] likeCount missing initial={diag.get('missing_initial', 0)}")
+    print(f"[daily-auto-fetch] fallback success={diag.get('fallback_success', 0)}")
+    print(f"[daily-auto-fetch] fallback missing={diag.get('missing_final', 0)}")
     return 0
 
 if __name__ == "__main__":

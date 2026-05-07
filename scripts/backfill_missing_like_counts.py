@@ -30,6 +30,8 @@ def main():
         cells=[ws.cell(r,c) for r,c,_ in updates]
         for cell,(_,_,v) in zip(cells,updates): cell.value=v
         ws.update_cells(cells,value_input_option="USER_ENTERED")
-    print(f"対象行数: {len(targets)}\nvideo_id抽出成功数: {extracted}\nAPI取得成功数: {api_ok}\nlikeCount取得成功数: {like_ok}\n更新件数: {0 if a.dry_run else len(updates)}\nmissing継続件数: {missing}\nskipped件数: {skipped}")
+    planned_updates=len(updates)
+    actual_updates=0 if a.dry_run else len(updates)
+    print(f"対象行数: {len(targets)}\nvideo_id抽出成功数: {extracted}\nAPI取得成功数: {api_ok}\nlikeCount取得成功数: {like_ok}\n更新予定件数: {planned_updates}\n実更新件数: {actual_updates}\nmissing継続件数: {missing}\nskipped件数: {skipped}")
 
 if __name__=="__main__": main()
