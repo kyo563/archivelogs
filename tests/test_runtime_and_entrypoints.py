@@ -156,3 +156,45 @@ def test_import_app_is_not_fatal(monkeypatch):
         importlib.import_module("app")
     except Exception as exc:  # pragma: no cover
         pytest.fail(f"app import should not be fatal, but got: {exc}")
+
+
+def test_build_record_diag_display_maps_core_keys():
+    app = importlib.import_module("app")
+    rows = [["a"], ["b"]]
+    diag = {"bulk_count": 5, "missing_initial": 2, "fallback_success": 1, "missing_final": 1}
+    out = app.build_record_diag_display(dry_run=True, rows=rows, appended_count=0, diag=diag)
+    assert out == {
+        "dry-run": True,
+        "record rows planned": 2,
+        "record rows appended": 0,
+        "videos.list bulk count": 5,
+        "likeCount missing initial": 2,
+        "fallback success": 1,
+        "fallback missing": 1,
+    }
+
+
+def test_append_record_rows_if_needed_dry_run_has_no_side_effects(monkeypatch):
+    app = importlib.import_module("app")
+    called = {"ws": 0, "append": 0, "refresh": 0}
+
+    monkeypatch.setattr("app.get_record_worksheet", lambda: called.__setitem__("ws", called["ws"] + 1))
+    monkeypatch.setattr("app.shared_append_rows", lambda *_: called.__setitem__("append", called["append"] + 1))
+    monkeypatch.setattr("app.refresh_record_comment_counts", lambda *_: called.__setitem__("refresh", called["refresh"] + 1))
+
+    appended, updated = app.append_record_rows_if_needed("dummy", [["row"]], dry_run=True)
+    assert appended == 0 and updated == 0
+    assert called == {"ws": 0, "append": 0, "refresh": 0}
+
+
+def test_append_record_rows_if_needed_non_dry_run_calls_append(monkeypatch):
+    app = importlib.import_module("app")
+    called = {"append": 0}
+    monkeypatch.setattr("app.get_record_worksheet", lambda: object())
+    monkeypatch.setattr("app.shared_append_rows", lambda *_: called.__setitem__("append", called["append"] + 1))
+    monkeypatch.setattr("app.refresh_record_comment_counts", lambda *_: 3)
+
+    appended, updated = app.append_record_rows_if_needed("dummy", [["r1"], ["r2"]], dry_run=False)
+    assert called["append"] == 1
+    assert appended == 2
+    assert updated == 3
