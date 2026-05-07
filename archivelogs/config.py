@@ -1,8 +1,18 @@
 import json
 import os
+from collections.abc import Mapping
 from typing import Any
 
 _RUNTIME_CONFIG: dict[str, Any] = {}
+
+
+def _to_plain_dict(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {k: _to_plain_dict(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_plain_dict(v) for v in value]
+    return value
+
 
 
 def set_runtime_config(overrides: dict):
@@ -32,8 +42,8 @@ def get_required_env(key: str) -> str:
 
 def load_service_account_info() -> dict:
     runtime_dict = get_secret_value("gcp_service_account")
-    if isinstance(runtime_dict, dict):
-        return runtime_dict
+    if isinstance(runtime_dict, Mapping):
+        return _to_plain_dict(runtime_dict)
 
     raw = get_secret_value("GCP_SERVICE_ACCOUNT_JSON")
     if raw:
