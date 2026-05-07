@@ -903,6 +903,13 @@ def build_record_diag_display(dry_run: bool, rows: List[List], appended_count: i
         "missing no item": diag.get("missing_no_item", 0),
         "missing statistics missing": diag.get("missing_statistics_missing", 0),
         "missing likeCount missing": diag.get("missing_likeCount_missing", 0),
+        "zero-like initial": diag.get("zero_like_initial", 0),
+        "zero-like recheck success": diag.get("zero_like_recheck_success", 0),
+        "zero-like still zero": diag.get("zero_like_still_zero", 0),
+        "zero-like recheck failed": diag.get("zero_like_recheck_failed", 0),
+        "zero-like recheck no item": diag.get("zero_like_recheck_no_item", 0),
+        "zero-like recheck statistics missing": diag.get("zero_like_recheck_statistics_missing", 0),
+        "zero-like recheck likeCount missing": diag.get("zero_like_recheck_likeCount_missing", 0),
     }
 
 

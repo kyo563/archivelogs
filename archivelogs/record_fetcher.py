@@ -92,8 +92,18 @@ def build_record_row_from_video_item(item, logged_at_str):
     return [logged_at_str, tp, title_cell, pub, dur, parse_stat_value(st, "viewCount"), parse_stat_value(st, "likeCount"), parse_stat_value(st, "commentCount")], ("likeCount" not in st)
 
 
+def _is_suspicious_zero_like(statistics):
+    like = statistics.get("likeCount") if isinstance(statistics, dict) else None
+    if like not in (0, "0"):
+        return False
+    view = parse_stat_value(statistics, "viewCount")
+    comment = parse_stat_value(statistics, "commentCount")
+    return (view not in ("", 0)) or (comment not in ("", 0))
+
+
 def build_rows_from_video_items_with_like_fallback(youtube, items, logged_at_str):
     out, miss, packed = [], [], []
+    suspicious_zero = []
     for it in items:
         vid = it.get("id")
         if not vid:
@@ -102,8 +112,14 @@ def build_rows_from_video_items_with_like_fallback(youtube, items, logged_at_str
         packed.append((vid, row, it))
         if m:
             miss.append(vid)
+        if _is_suspicious_zero_like(it.get("statistics") or {}):
+            suspicious_zero.append(vid)
+
     fs, mf = 0, 0
     mn, ms, ml = 0, 0, 0
+    zl_success, zl_still_zero, zl_failed = 0, 0, 0
+    zl_no_item, zl_stats_missing, zl_like_missing = 0, 0, 0
+
     for vid, row, it in packed:
         if vid in miss:
             fb = fallback_fetch_like_count_diagnostic(youtube, vid)
@@ -119,32 +135,49 @@ def build_rows_from_video_items_with_like_fallback(youtube, items, logged_at_str
                     ms += 1
                 elif reason == "likeCount_missing":
                     ml += 1
-                s = it.get("statistics") or {}
-                a1 = (fb.get("attempts") or [{}])[0] if (fb.get("attempts") or []) else {}
-                a2 = (fb.get("attempts") or [{}, {}])[1] if len(fb.get("attempts") or []) > 1 else {}
-                title = ((it.get("snippet") or {}).get("title", "") or "").replace("\n", " ")[:120]
-                LOGGER.warning(
-                    "[record-fetch][missing-likeCount] video_id=%s title=%s initial_stats_keys=%s initial_viewCount=%s initial_commentCount=%s fallback_final_reason=%s fallback_attempt1_returned=%s fallback_attempt1_stats_keys=%s fallback_attempt1_has_likeCount=%s fallback_attempt2_returned=%s fallback_attempt2_stats_keys=%s fallback_attempt2_has_likeCount=%s fallback_privacyStatus=%s fallback_uploadStatus=%s fallback_liveBroadcastContent=%s",
-                    vid,
-                    title,
-                    list(s.keys()),
-                    s.get("viewCount", ""),
-                    s.get("commentCount", ""),
-                    reason,
-                    a1.get("returned", False),
-                    a1.get("statistics_keys", []),
-                    a1.get("has_likeCount", False),
-                    a2.get("returned", False),
-                    a2.get("statistics_keys", []),
-                    a2.get("has_likeCount", False),
-                    a2.get("privacyStatus", ""),
-                    a2.get("uploadStatus", ""),
-                    a2.get("liveBroadcastContent", ""),
-                )
-                if os.environ.get("DEBUG_YOUTUBE_STATS") == "1":
-                    LOGGER.warning("[record-fetch][missing-likeCount][debug] video_id=%s fallback_attempt1_raw_statistics=%s fallback_attempt2_raw_statistics=%s", vid, a1.get("raw_statistics", {}), a2.get("raw_statistics", {}))
+        elif vid in suspicious_zero:
+            fb = fallback_fetch_like_count_diagnostic(youtube, vid)
+            title = ((it.get("snippet") or {}).get("title", "") or "").replace("\n", " ")[:120]
+            s = it.get("statistics") or {}
+            initial_view = s.get("viewCount", "")
+            initial_comment = s.get("commentCount", "")
+            if fb.get("success"):
+                like_count = int(fb.get("like_count", 0) or 0)
+                if like_count >= 1:
+                    row[6] = like_count
+                    zl_success += 1
+                    LOGGER.info("[record-fetch][zero-like-recheck] video_id=%s title=%s initial_viewCount=%s initial_commentCount=%s result=updated likeCount=%s", vid, title, initial_view, initial_comment, like_count)
+                else:
+                    zl_still_zero += 1
+                    LOGGER.info("[record-fetch][zero-like-recheck] video_id=%s title=%s initial_viewCount=%s initial_commentCount=%s result=still_zero", vid, title, initial_view, initial_comment)
+            else:
+                zl_failed += 1
+                reason = fb.get("final_reason", "")
+                if reason == "no_item_returned":
+                    zl_no_item += 1
+                elif reason == "statistics_missing":
+                    zl_stats_missing += 1
+                elif reason == "likeCount_missing":
+                    zl_like_missing += 1
+                LOGGER.warning("[record-fetch][zero-like-recheck] video_id=%s title=%s initial_viewCount=%s initial_commentCount=%s result=failed final_reason=%s", vid, title, initial_view, initial_comment, reason)
         out.append(row)
-    return out, {"bulk_count": len(items), "missing_initial": len(miss), "fallback_success": fs, "missing_final": mf, "missing_no_item": mn, "missing_statistics_missing": ms, "missing_likeCount_missing": ml}
+
+    return out, {
+        "bulk_count": len(items),
+        "missing_initial": len(miss),
+        "fallback_success": fs,
+        "missing_final": mf,
+        "missing_no_item": mn,
+        "missing_statistics_missing": ms,
+        "missing_likeCount_missing": ml,
+        "zero_like_initial": len(suspicious_zero),
+        "zero_like_recheck_success": zl_success,
+        "zero_like_still_zero": zl_still_zero,
+        "zero_like_recheck_failed": zl_failed,
+        "zero_like_recheck_no_item": zl_no_item,
+        "zero_like_recheck_statistics_missing": zl_stats_missing,
+        "zero_like_recheck_likeCount_missing": zl_like_missing,
+    }
 
 
 def build_rows_with_like_fallback(youtube, video_ids, logged_at_str):

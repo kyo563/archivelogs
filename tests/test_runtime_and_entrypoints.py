@@ -176,7 +176,7 @@ def test_import_app_is_not_fatal(monkeypatch):
 def test_build_record_diag_display_maps_core_keys():
     app = importlib.import_module("app")
     rows = [["a"], ["b"]]
-    diag = {"bulk_count": 5, "missing_initial": 2, "fallback_success": 1, "missing_final": 1, "missing_no_item": 1, "missing_statistics_missing": 0, "missing_likeCount_missing": 1}
+    diag = {"bulk_count": 5, "missing_initial": 2, "fallback_success": 1, "missing_final": 1, "missing_no_item": 1, "missing_statistics_missing": 0, "missing_likeCount_missing": 1, "zero_like_initial": 3, "zero_like_recheck_success": 1, "zero_like_still_zero": 1, "zero_like_recheck_failed": 1, "zero_like_recheck_no_item": 0, "zero_like_recheck_statistics_missing": 0, "zero_like_recheck_likeCount_missing": 1}
     out = app.build_record_diag_display(dry_run=True, rows=rows, appended_count=0, diag=diag)
     assert out == {
         "dry-run": True,
@@ -189,6 +189,13 @@ def test_build_record_diag_display_maps_core_keys():
         "missing no item": 1,
         "missing statistics missing": 0,
         "missing likeCount missing": 1,
+        "zero-like initial": 3,
+        "zero-like recheck success": 1,
+        "zero-like still zero": 1,
+        "zero-like recheck failed": 1,
+        "zero-like recheck no item": 0,
+        "zero-like recheck statistics missing": 0,
+        "zero-like recheck likeCount missing": 1,
     }
 
 

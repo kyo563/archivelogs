@@ -48,3 +48,44 @@ def test_fallback_missing_reason_no_item(monkeypatch):
     monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":False,"final_reason":"no_item_returned","attempts":[{"returned":False},{"returned":False}]})
     _rows,diag=build_rows_with_like_fallback(None,["abcdefghijk"],"2026/01/01 00:00:00")
     assert diag["missing_no_item"]==1
+
+
+def test_zero_like_recheck_targeted_by_view(monkeypatch):
+    item={"id":"abcdefghijk","snippet":{"title":"t"},"statistics":{"likeCount":"0","viewCount":"10","commentCount":"0"},"contentDetails":{"duration":"PT10M"}}
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":True,"like_count":0})
+    rows,diag=build_rows_from_video_items_with_like_fallback(None,[item],"2026/01/01 00:00:00")
+    assert rows[0][6]==0 and diag["zero_like_initial"]==1
+
+def test_zero_like_recheck_targeted_by_comment(monkeypatch):
+    item={"id":"abcdefghijk","snippet":{"title":"t"},"statistics":{"likeCount":"0","viewCount":"0","commentCount":"2"},"contentDetails":{"duration":"PT10M"}}
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":True,"like_count":0})
+    _rows,diag=build_rows_from_video_items_with_like_fallback(None,[item],"2026/01/01 00:00:00")
+    assert diag["zero_like_initial"]==1
+
+def test_zero_like_recheck_not_targeted_when_no_signal(monkeypatch):
+    item={"id":"abcdefghijk","snippet":{"title":"t"},"statistics":{"likeCount":"0","viewCount":"0","commentCount":"0"},"contentDetails":{"duration":"PT10M"}}
+    called={"n":0}
+    def _fb(_y,_v):
+        called["n"]+=1
+        return {"success":True,"like_count":99}
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', _fb)
+    rows,diag=build_rows_from_video_items_with_like_fallback(None,[item],"2026/01/01 00:00:00")
+    assert rows[0][6]==0 and diag["zero_like_initial"]==0 and called["n"]==0
+
+def test_zero_like_recheck_updates_when_positive(monkeypatch):
+    item={"id":"abcdefghijk","snippet":{"title":"t"},"statistics":{"likeCount":"0","viewCount":"1"},"contentDetails":{"duration":"PT10M"}}
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":True,"like_count":"12"})
+    rows,diag=build_rows_from_video_items_with_like_fallback(None,[item],"2026/01/01 00:00:00")
+    assert rows[0][6]==12 and diag["zero_like_recheck_success"]==1
+
+def test_zero_like_recheck_still_zero(monkeypatch):
+    item={"id":"abcdefghijk","snippet":{"title":"t"},"statistics":{"likeCount":"0","viewCount":"1"},"contentDetails":{"duration":"PT10M"}}
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":True,"like_count":"0"})
+    rows,diag=build_rows_from_video_items_with_like_fallback(None,[item],"2026/01/01 00:00:00")
+    assert rows[0][6]==0 and diag["zero_like_still_zero"]==1
+
+def test_zero_like_recheck_likecount_missing_reason(monkeypatch):
+    item={"id":"abcdefghijk","snippet":{"title":"t"},"statistics":{"likeCount":"0","viewCount":"1"},"contentDetails":{"duration":"PT10M"}}
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":False,"final_reason":"likeCount_missing"})
+    rows,diag=build_rows_from_video_items_with_like_fallback(None,[item],"2026/01/01 00:00:00")
+    assert rows[0][6]==0 and diag["zero_like_recheck_likeCount_missing"]==1
