@@ -45,6 +45,21 @@ def test_service_account_can_be_loaded_from_json_string(monkeypatch):
     config.clear_runtime_config()
 
 
+
+
+def test_import_config_symbols():
+    from archivelogs.config import (
+        clear_runtime_config,
+        get_secret_value,
+        load_service_account_info,
+        set_runtime_config,
+    )
+
+    assert callable(get_secret_value)
+    assert callable(set_runtime_config)
+    assert callable(clear_runtime_config)
+    assert callable(load_service_account_info)
+
 def test_run_daily_auto_jobs_normal_run_calls_append_rows(monkeypatch):
     monkeypatch.setattr("archivelogs.jobs.get_youtube_client", lambda _: object())
     monkeypatch.setattr("archivelogs.jobs.get_record_worksheet", lambda create=True: object())

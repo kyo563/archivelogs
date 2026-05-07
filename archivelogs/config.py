@@ -1,9 +1,9 @@
 import json
 import os
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Dict
 
-_RUNTIME_CONFIG: dict[str, Any] = {}
+_RUNTIME_CONFIG: Dict[str, Any] = {}
 
 
 def _to_plain_dict(value: Any) -> Any:
@@ -15,13 +15,13 @@ def _to_plain_dict(value: Any) -> Any:
 
 
 
-def set_runtime_config(overrides: dict):
+def set_runtime_config(overrides: Dict[str, Any]) -> None:
     if not isinstance(overrides, dict):
         raise TypeError("overrides は dict である必要があります。")
     _RUNTIME_CONFIG.update(overrides)
 
 
-def clear_runtime_config():
+def clear_runtime_config() -> None:
     _RUNTIME_CONFIG.clear()
 
 
@@ -40,7 +40,7 @@ def get_required_env(key: str) -> str:
     return v
 
 
-def load_service_account_info() -> dict:
+def load_service_account_info() -> Dict[str, Any]:
     runtime_dict = get_secret_value("gcp_service_account")
     if isinstance(runtime_dict, Mapping):
         return _to_plain_dict(runtime_dict)
