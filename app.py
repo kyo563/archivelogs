@@ -904,7 +904,7 @@ def build_record_diag_display(dry_run: bool, rows: List[List], appended_count: i
 
 
 def append_record_rows_if_needed(api_key: str, rows: List[List], dry_run: bool) -> Tuple[int, int]:
-    if dry_run:
+    if dry_run or not rows:
         return 0, 0
     ws_record = get_record_worksheet()
     shared_append_rows(ws_record, rows)
