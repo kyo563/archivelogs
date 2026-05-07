@@ -27,6 +27,11 @@ from archivelogs.record_fetcher import (
 )
 from archivelogs.sheets import append_rows as shared_append_rows
 from archivelogs.youtube_client import fetch_videos_bulk
+from archivelogs.config import (
+    get_secret_value as config_get_secret_value,
+    load_service_account_info,
+    set_runtime_config,
+)
 
 # ====================================
 # 共通設定
@@ -43,15 +48,26 @@ STATUS_SHEET_NAME = "Status"
 SEARCH_TARGET_SHEET_NAME = "検索対象"
 
 
+def initialize_runtime_config_from_secrets():
+    """st.secrets の必要キーを runtime override に反映する。"""
+    overrides = {}
+    for key in ("YOUTUBE_API_KEY", "SPREADSHEET_ID", "WORKSHEET_NAME", "gcp_service_account"):
+        try:
+            value = st.secrets.get(key, None)
+        except StreamlitSecretNotFoundError:
+            value = None
+        if value is not None:
+            overrides[key] = value
+    if overrides:
+        set_runtime_config(overrides)
+
+
+initialize_runtime_config_from_secrets()
+
+
 def get_secret_value(key: str, default=None):
-    """Streamlit secrets を優先し、無ければ環境変数を使う。"""
-    try:
-        value = st.secrets.get(key, None)
-    except StreamlitSecretNotFoundError:
-        value = None
-    if value is None:
-        value = os.environ.get(key, None)
-    return default if value is None else value
+    """runtime override / 環境変数から値を取得する。"""
+    return config_get_secret_value(key, default)
 
 
 def get_spreadsheet_id() -> str:
@@ -240,16 +256,7 @@ def get_youtube_client(api_key: str):
 
 @st.cache_resource
 def get_gspread_client():
-    try:
-        sa_info = st.secrets.get("gcp_service_account")
-    except StreamlitSecretNotFoundError:
-        sa_info = None
-    if sa_info is None:
-        sa_info_text = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-        if sa_info_text:
-            sa_info = json.loads(sa_info_text)
-    if sa_info is None:
-        raise RuntimeError('gcp_service_account / GCP_SERVICE_ACCOUNT_JSON が設定されていません。')
+    sa_info = load_service_account_info()
     creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
     return gspread.authorize(creds)
 
