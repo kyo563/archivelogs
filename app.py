@@ -890,6 +890,27 @@ def fetch_record_rows_via_core(api_key: str, channel_id: str, max_results: int =
     logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
     return build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
 
+
+def build_record_diag_display(dry_run: bool, rows: List[List], appended_count: int, diag: Dict) -> Dict:
+    return {
+        "dry-run": dry_run,
+        "record rows planned": len(rows),
+        "record rows appended": appended_count,
+        "videos.list bulk count": diag.get("bulk_count", 0),
+        "likeCount missing initial": diag.get("missing_initial", 0),
+        "fallback success": diag.get("fallback_success", 0),
+        "fallback missing": diag.get("missing_final", 0),
+    }
+
+
+def append_record_rows_if_needed(api_key: str, rows: List[List], dry_run: bool) -> Tuple[int, int]:
+    if dry_run:
+        return 0, 0
+    ws_record = get_record_worksheet()
+    shared_append_rows(ws_record, rows)
+    updated_count = refresh_record_comment_counts(ws_record, api_key)
+    return len(rows), updated_count
+
 def fetch_comment_counts(video_ids: List[str], api_key: str) -> Dict[str, str]:
     """videos.list(part=statistics) だけでコメント数をまとめて取得する。"""
     youtube = get_youtube_client(api_key)
@@ -1710,7 +1731,6 @@ def render_streamlit_app():
                     )
 
             if run_record_btn:
-                ws_record = get_record_worksheet()
                 if not record_input.strip():
                     st.error("チャンネルURL / ID / @ユーザー名 / 動画URL を入力してください。")
                 else:
@@ -1731,24 +1751,12 @@ def render_streamlit_app():
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                                 rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
-                                appended_count = 0
-                                if not dry_run:
-                                    shared_append_rows(ws_record, rows)
-                                    appended_count = len(rows)
+                                appended_count, updated_count = append_record_rows_if_needed(api_key, rows, dry_run)
                                 st.caption("record取得診断")
-                                st.json({
-                                    "dry-run": dry_run,
-                                    "record rows planned": diag.get("record_rows_planned", 0),
-                                    "record rows appended": appended_count,
-                                    "videos.list bulk count": diag.get("videos_list_bulk_count", 0),
-                                    "likeCount missing initial": diag.get("like_count_missing_initial", 0),
-                                    "fallback success": diag.get("fallback_success", 0),
-                                    "fallback missing": diag.get("fallback_missing", 0),
-                                })
+                                st.json(build_record_diag_display(dry_run, rows, appended_count, diag))
                                 if dry_run:
                                     st.info("dry-run のため Record への追記は実行しませんでした。")
                                 else:
-                                    updated_count = refresh_record_comment_counts(ws_record, api_key)
                                     st.success(
                                         f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
                                     )
@@ -1768,24 +1776,12 @@ def render_streamlit_app():
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                                 rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
-                                appended_count = 0
-                                if not dry_run:
-                                    shared_append_rows(ws_record, rows)
-                                    appended_count = len(rows)
+                                appended_count, updated_count = append_record_rows_if_needed(api_key, rows, dry_run)
                                 st.caption("record取得診断")
-                                st.json({
-                                    "dry-run": dry_run,
-                                    "record rows planned": diag.get("record_rows_planned", 0),
-                                    "record rows appended": appended_count,
-                                    "videos.list bulk count": diag.get("videos_list_bulk_count", 0),
-                                    "likeCount missing initial": diag.get("like_count_missing_initial", 0),
-                                    "fallback success": diag.get("fallback_success", 0),
-                                    "fallback missing": diag.get("fallback_missing", 0),
-                                })
+                                st.json(build_record_diag_display(dry_run, rows, appended_count, diag))
                                 if dry_run:
                                     st.info("dry-run のため Record への追記は実行しませんでした。")
                                 else:
-                                    updated_count = refresh_record_comment_counts(ws_record, api_key)
                                     st.success(
                                         f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
                                     )
