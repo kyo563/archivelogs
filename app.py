@@ -1667,6 +1667,7 @@ def render_streamlit_app():
                 help="チャンネル入力なら直近50件、動画入力なら1件のみ取得します。",
             )
 
+            dry_run = st.checkbox("dry-run（Recordに書き込まない）", value=False)
             run_record_btn = st.button("入力内容から Record に追記")
 
             routine_btn = st.button("ルーティン")
@@ -1730,20 +1731,27 @@ def render_streamlit_app():
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                                 rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
-                                shared_append_rows(ws_record, rows)
+                                appended_count = 0
+                                if not dry_run:
+                                    shared_append_rows(ws_record, rows)
+                                    appended_count = len(rows)
                                 st.caption("record取得診断")
                                 st.json({
+                                    "dry-run": dry_run,
+                                    "record rows planned": diag.get("record_rows_planned", 0),
+                                    "record rows appended": appended_count,
                                     "videos.list bulk count": diag.get("videos_list_bulk_count", 0),
                                     "likeCount missing initial": diag.get("like_count_missing_initial", 0),
                                     "fallback success": diag.get("fallback_success", 0),
                                     "fallback missing": diag.get("fallback_missing", 0),
-                                    "record rows planned": diag.get("record_rows_planned", 0),
-                                    "record rows appended": len(rows),
                                 })
-                                updated_count = refresh_record_comment_counts(ws_record, api_key)
-                                st.success(
-                                    f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
-                                )
+                                if dry_run:
+                                    st.info("dry-run のため Record への追記は実行しませんでした。")
+                                else:
+                                    updated_count = refresh_record_comment_counts(ws_record, api_key)
+                                    st.success(
+                                        f"動画1件のログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                                    )
                     else:
                         with st.spinner("直近50件を取得中..."):
                             channel_id = resolve_channel_id_simple(record_input, api_key)
@@ -1760,20 +1768,27 @@ def render_streamlit_app():
                                 now_jst = datetime.now(JST)
                                 logged_at_str = now_jst.strftime("%Y/%m/%d %H:%M:%S")
                                 rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, logged_at_str)
-                                shared_append_rows(ws_record, rows)
+                                appended_count = 0
+                                if not dry_run:
+                                    shared_append_rows(ws_record, rows)
+                                    appended_count = len(rows)
                                 st.caption("record取得診断")
                                 st.json({
+                                    "dry-run": dry_run,
+                                    "record rows planned": diag.get("record_rows_planned", 0),
+                                    "record rows appended": appended_count,
                                     "videos.list bulk count": diag.get("videos_list_bulk_count", 0),
                                     "likeCount missing initial": diag.get("like_count_missing_initial", 0),
                                     "fallback success": diag.get("fallback_success", 0),
                                     "fallback missing": diag.get("fallback_missing", 0),
-                                    "record rows planned": diag.get("record_rows_planned", 0),
-                                    "record rows appended": len(rows),
                                 })
-                                updated_count = refresh_record_comment_counts(ws_record, api_key)
-                                st.success(
-                                    f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
-                                )
+                                if dry_run:
+                                    st.info("dry-run のため Record への追記は実行しませんでした。")
+                                else:
+                                    updated_count = refresh_record_comment_counts(ws_record, api_key)
+                                    st.success(
+                                        f"{len(rows)}件の動画ログを Record シートに追記し、{updated_count}件のコメント数を H 列に反映しました。"
+                                    )
 
     # ----------------------------
     # タブ2: チャンネルステータス（Status）
