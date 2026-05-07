@@ -176,7 +176,7 @@ def test_import_app_is_not_fatal(monkeypatch):
 def test_build_record_diag_display_maps_core_keys():
     app = importlib.import_module("app")
     rows = [["a"], ["b"]]
-    diag = {"bulk_count": 5, "missing_initial": 2, "fallback_success": 1, "missing_final": 1}
+    diag = {"bulk_count": 5, "missing_initial": 2, "fallback_success": 1, "missing_final": 1, "missing_no_item": 1, "missing_statistics_missing": 0, "missing_likeCount_missing": 1}
     out = app.build_record_diag_display(dry_run=True, rows=rows, appended_count=0, diag=diag)
     assert out == {
         "dry-run": True,
@@ -186,6 +186,9 @@ def test_build_record_diag_display_maps_core_keys():
         "likeCount missing initial": 2,
         "fallback success": 1,
         "fallback missing": 1,
+        "missing no item": 1,
+        "missing statistics missing": 0,
+        "missing likeCount missing": 1,
     }
 
 

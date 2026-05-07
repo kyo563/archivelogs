@@ -1,4 +1,4 @@
-import logging,time
+import logging,time,os
 from googleapiclient.errors import HttpError
 VIDEO_PART_FULL="id,snippet,contentDetails,statistics,status,liveStreamingDetails"
 LOGGER=logging.getLogger(__name__)
@@ -33,9 +33,65 @@ def _fetch_single(youtube, video_id, part):
     items=resp.get("items",[])
     return items[0] if items else None
 
+
+
+def _attempt_info(part, item):
+    info = {"part": part, "returned": bool(item)}
+    stats = (item or {}).get("statistics") or {}
+    info["statistics_keys"] = list(stats.keys())
+    info["has_likeCount"] = "likeCount" in stats
+    if item:
+        st = item.get("status") or {}
+        sn = item.get("snippet") or {}
+        info["privacyStatus"] = st.get("privacyStatus", "")
+        info["uploadStatus"] = st.get("uploadStatus", "")
+        info["liveBroadcastContent"] = sn.get("liveBroadcastContent", "")
+        if os.environ.get("DEBUG_YOUTUBE_STATS") == "1":
+            info["raw_statistics"] = stats
+    else:
+        info["privacyStatus"] = ""
+        info["uploadStatus"] = ""
+        info["liveBroadcastContent"] = ""
+    return info
+
+
+def fallback_fetch_like_count_diagnostic(youtube, video_id, sleep_seconds=0.2):
+    attempts = []
+    last_item = None
+    for i, part in enumerate(["id,statistics", "id,snippet,statistics,status"]):
+        item = _fetch_single(youtube, video_id, part)
+        attempts.append(_attempt_info(part, item))
+        if item:
+            last_item = item
+            stats = item.get("statistics")
+            if isinstance(stats, dict) and "likeCount" in stats:
+                return {
+                    "video_id": video_id,
+                    "success": True,
+                    "item": item,
+                    "like_count": int(stats.get("likeCount")) if str(stats.get("likeCount", "")).isdigit() else stats.get("likeCount", ""),
+                    "attempts": attempts,
+                    "final_reason": "ok",
+                }
+        if i == 0:
+            time.sleep(sleep_seconds)
+
+    if not last_item:
+        final_reason = "no_item_returned"
+    elif "statistics" not in last_item or last_item.get("statistics") is None:
+        final_reason = "statistics_missing"
+    else:
+        final_reason = "likeCount_missing"
+
+    return {
+        "video_id": video_id,
+        "success": False,
+        "item": last_item,
+        "like_count": "",
+        "attempts": attempts,
+        "final_reason": final_reason,
+    }
+
 def fallback_fetch_like_count_item(youtube, video_id, sleep_seconds=0.2):
-    for i,part in enumerate(["id,statistics","id,snippet,statistics,status"]):
-        it=_fetch_single(youtube,video_id,part)
-        if it and "likeCount" in ((it.get("statistics") or {})): return it
-        if i==0: time.sleep(sleep_seconds)
-    return None
+    diag = fallback_fetch_like_count_diagnostic(youtube, video_id, sleep_seconds=sleep_seconds)
+    return diag.get("item") if diag.get("success") else None
