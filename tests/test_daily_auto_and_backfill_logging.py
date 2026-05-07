@@ -31,7 +31,7 @@ def test_run_daily_auto_jobs_dry_run_no_append(monkeypatch):
 def test_run_daily_auto_fetch_prints_dry_run(monkeypatch, capsys):
     monkeypatch.setattr("scripts.run_daily_auto_fetch.get_required_env", lambda _: "dummy")
     monkeypatch.setattr("argparse.ArgumentParser.parse_args", lambda self: type("A", (), {"dry_run": True})())
-    monkeypatch.setattr("scripts.run_daily_auto_fetch.run_daily_auto_jobs", lambda **_: {"record_target_count": 3, "record_rows_planned": 2, "record_rows_appended": 0, "routine_status_planned": 1, "routine_status_appended": 0, "status_batch_picked": 0, "status_batch_planned": 0, "status_batch_appended": 0, "diag": {"bulk_count": 3, "missing_initial": 2, "fallback_success": 1, "missing_final": 1}})
+    monkeypatch.setattr("scripts.run_daily_auto_fetch.run_daily_auto_jobs", lambda **_: {"record_target_count": 3, "record_rows_planned": 2, "record_rows_appended": 0, "routine_status_planned": 1, "routine_status_appended": 0, "status_batch_picked": 0, "status_batch_planned": 0, "status_batch_appended": 0, "diag": {"bulk_count": 3, "missing_initial": 2, "fallback_success": 1, "missing_final": 1, "missing_no_item": 0, "missing_statistics_missing": 0, "missing_likeCount_missing": 1}})
     assert daily_script.main() == 0
     out = capsys.readouterr().out
     assert "[daily-auto-fetch] dry_run=true" in out

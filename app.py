@@ -900,6 +900,9 @@ def build_record_diag_display(dry_run: bool, rows: List[List], appended_count: i
         "likeCount missing initial": diag.get("missing_initial", 0),
         "fallback success": diag.get("fallback_success", 0),
         "fallback missing": diag.get("missing_final", 0),
+        "missing no item": diag.get("missing_no_item", 0),
+        "missing statistics missing": diag.get("missing_statistics_missing", 0),
+        "missing likeCount missing": diag.get("missing_likeCount_missing", 0),
     }
 
 

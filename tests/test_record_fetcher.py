@@ -18,13 +18,13 @@ def test_short_live():
 
 def test_fallback_called_and_reflected(monkeypatch):
     monkeypatch.setattr('archivelogs.record_fetcher.fetch_videos_bulk', lambda y,ids:{ids[0]:{"id":ids[0],"snippet":{"title":"t"},"statistics":{},"contentDetails":{"duration":"PT10M"}}})
-    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_item', lambda y,vid:{"id":vid,"statistics":{"likeCount":"5"}})
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":True,"like_count":5})
     rows,diag=build_rows_with_like_fallback(None,["abcdefghijk"],"2026/01/01 00:00:00")
     assert rows[0][6]==5 and diag["fallback_success"]==1
 
 def test_fallback_missing(monkeypatch):
     monkeypatch.setattr('archivelogs.record_fetcher.fetch_videos_bulk', lambda y,ids:{ids[0]:{"id":ids[0],"snippet":{"title":"t"},"statistics":{},"contentDetails":{"duration":"PT10M"}}})
-    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_item', lambda y,vid:None)
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":False,"final_reason":"no_item_returned","attempts":[]})
     rows,diag=build_rows_with_like_fallback(None,["abcdefghijk"],"2026/01/01 00:00:00")
     assert rows[0][6]=="" and diag["missing_final"]==1
 
@@ -35,3 +35,16 @@ def test_filter_recordable_video_items():
     ]
     out=filter_recordable_video_items(items)
     assert [x["id"] for x in out]==["1"]
+
+
+def test_fallback_missing_reason_likecount(monkeypatch):
+    monkeypatch.setattr('archivelogs.record_fetcher.fetch_videos_bulk', lambda y,ids:{ids[0]:{"id":ids[0],"snippet":{"title":"t"},"statistics":{},"contentDetails":{"duration":"PT10M"}}})
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":False,"final_reason":"likeCount_missing","attempts":[{"returned":True,"statistics_keys":["viewCount"],"has_likeCount":False},{"returned":True,"statistics_keys":["viewCount","commentCount"],"has_likeCount":False,"privacyStatus":"public","uploadStatus":"processed","liveBroadcastContent":"none"}]})
+    rows,diag=build_rows_with_like_fallback(None,["abcdefghijk"],"2026/01/01 00:00:00")
+    assert rows[0][6]=="" and diag["missing_final"]==1 and diag["missing_likeCount_missing"]==1
+
+def test_fallback_missing_reason_no_item(monkeypatch):
+    monkeypatch.setattr('archivelogs.record_fetcher.fetch_videos_bulk', lambda y,ids:{ids[0]:{"id":ids[0],"snippet":{"title":"t"},"statistics":{},"contentDetails":{"duration":"PT10M"}}})
+    monkeypatch.setattr('archivelogs.record_fetcher.fallback_fetch_like_count_diagnostic', lambda y,vid:{"success":False,"final_reason":"no_item_returned","attempts":[{"returned":False},{"returned":False}]})
+    _rows,diag=build_rows_with_like_fallback(None,["abcdefghijk"],"2026/01/01 00:00:00")
+    assert diag["missing_no_item"]==1
