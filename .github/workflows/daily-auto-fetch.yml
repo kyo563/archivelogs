@@ -14,6 +14,7 @@ jobs:
       WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
       GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
       STATUS_BATCH_LIMIT: '30'
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
