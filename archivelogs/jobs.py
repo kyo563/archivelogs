@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence
 
 from archivelogs.record_fetcher import (
@@ -8,7 +8,14 @@ from archivelogs.record_fetcher import (
     fetch_upload_video_ids,
     filter_recordable_video_items,
 )
-from archivelogs.sheets import append_rows, get_record_worksheet, get_search_target_worksheet, get_status_worksheet
+from archivelogs.sheets import (
+    CHANNEL_MASTER_HEADER,
+    append_rows,
+    get_channel_master_worksheet,
+    get_record_worksheet,
+    get_search_target_worksheet,
+    get_status_worksheet,
+)
 from archivelogs.youtube_client import fetch_videos_bulk, get_youtube_client
 
 LOGGER = logging.getLogger(__name__)
@@ -19,10 +26,7 @@ STATUS_COLS = 35
 
 
 def configure_logging():
-    logging.basicConfig(
-        level=(logging.DEBUG if os.environ.get("DEBUG_YOUTUBE_STATS") == "1" else logging.INFO),
-        format="%(message)s",
-    )
+    logging.basicConfig(level=(logging.DEBUG if os.environ.get("DEBUG_YOUTUBE_STATS") == "1" else logging.INFO), format="%(message)s")
 
 
 def _safe_div(numerator, denominator):
@@ -51,9 +55,7 @@ def _fetch_channel_playlists(youtube, channel_id: str, limit: int = 50) -> List[
     items: List[dict] = []
     page_token = None
     while len(items) < limit:
-        req = youtube.playlists().list(
-            part="snippet,contentDetails", channelId=channel_id, maxResults=min(50, limit - len(items)), pageToken=page_token
-        )
+        req = youtube.playlists().list(part="snippet,contentDetails", channelId=channel_id, maxResults=min(50, limit - len(items)), pageToken=page_token)
         resp = req.execute() or {}
         chunk = resp.get("items", [])
         items.extend(chunk)
@@ -102,16 +104,23 @@ def _build_recent_metrics(items: Sequence[dict], subscriber_count: int, now_jst:
     return [total_views, posts, top_title, top_views, _safe_div(top_views, total_views), _safe_div(total_views, posts), _safe_div(total_views, subscriber_count)]
 
 
-def _pick_status_batch_targets(targets, batch_limit: int, exclude_ids: Sequence[str]):
-    picked = []
-    seen = set()
-    excluded = 0
-    duplicated = 0
+def _parse_date(v: str) -> Optional[date]:
+    if not v:
+        return None
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(v[:10], fmt).date()
+        except Exception:
+            pass
+    return None
+
+
+def _dedupe_search_targets(targets, exclude_ids: Sequence[str]):
+    seen, out = set(), []
+    excluded = duplicated = 0
     exclude = set(exclude_ids)
-    for r in targets:
-        if len(r) < 1:
-            continue
-        cid = r[0].strip()
+    for i, r in enumerate(targets):
+        cid = (r[0] if r else "").strip()
         if not cid:
             continue
         if cid in exclude:
@@ -121,10 +130,30 @@ def _pick_status_batch_targets(targets, batch_limit: int, exclude_ids: Sequence[
             duplicated += 1
             continue
         seen.add(cid)
-        picked.append(cid)
-        if len(picked) >= int(batch_limit):
-            break
-    return picked, excluded, duplicated
+        out.append((cid, i))
+    return out, excluded, duplicated
+
+
+def _fetch_channels_light_bulk(youtube, channel_ids: Sequence[str]):
+    out = {}
+    for i in range(0, len(channel_ids), 50):
+        chunk = channel_ids[i : i + 50]
+        resp = youtube.channels().list(part="snippet,statistics,contentDetails", id=",".join(chunk), maxResults=50).execute() or {}
+        for it in resp.get("items", []):
+            cid = it.get("id")
+            if cid:
+                out[cid] = it
+    return out
+
+
+def _fetch_latest_upload_published_at(youtube, uploads_playlist_id: str) -> str:
+    if not uploads_playlist_id:
+        return ""
+    resp = youtube.playlistItems().list(part="snippet", playlistId=uploads_playlist_id, maxResults=1).execute() or {}
+    items = resp.get("items", [])
+    if not items:
+        return ""
+    return ((items[0].get("snippet") or {}).get("publishedAt") or "")
 
 
 def _build_status_row(youtube, channel_id):
@@ -138,29 +167,27 @@ def _build_status_row(youtube, channel_id):
     subscriber_count = int(st.get("subscriberCount", 0) or 0)
     video_count = int(st.get("videoCount", 0) or 0)
     view_count = int(st.get("viewCount", 0) or 0)
-
     published_dt = _parse_youtube_datetime_to_jst(sn.get("publishedAt", ""))
     open_date = published_dt.strftime("%Y/%m/%d") if published_dt else ""
     activity_months = _calc_activity_months(published_dt, now_jst)
-
     playlist_ratio, top_playlists = _build_playlist_metrics(youtube, channel_id, video_count)
     recent_items = _fetch_recent_video_items(youtube, channel_id)
     recent10 = _build_recent_metrics(recent_items, subscriber_count, now_jst, 10)
     recent30 = _build_recent_metrics(recent_items, subscriber_count, now_jst, 30)
-
-    row = [
-        now_jst.strftime("%Y/%m/%d"), channel_id, sn.get("title", ""), subscriber_count, video_count, view_count,
-        open_date, activity_months,
-        _safe_div(subscriber_count, activity_months), _safe_div(subscriber_count, video_count), _safe_div(view_count, video_count),
-        _safe_div(view_count, subscriber_count), _safe_div(subscriber_count, view_count), playlist_ratio,
-        _safe_div(video_count, activity_months), _safe_div(video_count, subscriber_count),
-        *top_playlists,
-        *recent10,
-        *recent30,
-    ]
+    row = [now_jst.strftime("%Y/%m/%d"), channel_id, sn.get("title", ""), subscriber_count, video_count, view_count, open_date, activity_months, _safe_div(subscriber_count, activity_months), _safe_div(subscriber_count, video_count), _safe_div(view_count, video_count), _safe_div(view_count, subscriber_count), _safe_div(subscriber_count, view_count), playlist_ratio, _safe_div(video_count, activity_months), _safe_div(video_count, subscriber_count), *top_playlists, *recent10, *recent30]
     if len(row) != STATUS_COLS:
         raise ValueError(f"status row length mismatch: {len(row)} != {STATUS_COLS}")
     return row
+
+
+def _select_status_batch(candidates, today: date, batch_limit: int):
+    def key(x):
+        if x["unseen"]:
+            return (0, 0, 0, x["order"])
+        return (1, -x["effective_age_days"], 0 if x["changed"] else 1, x["order"])
+
+    sorted_items = sorted(candidates, key=key)
+    return sorted_items[: int(batch_limit)]
 
 
 def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
@@ -169,19 +196,20 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
     ws_record = get_record_worksheet(create=not dry_run)
     ws_status = get_status_worksheet(create=not dry_run)
     ws_search = get_search_target_worksheet(create=not dry_run)
+    ws_master = get_channel_master_worksheet(create=not dry_run)
 
     ids = fetch_upload_video_ids(yt, ROUTINE_RECORD_CHANNEL_ID, 50)
     by_id = fetch_videos_bulk(yt, ids)
     items = filter_recordable_video_items([by_id[v] for v in ids if v in by_id], max_results=50)
     record_rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S"))
-
     record_appended = 0
     if record_rows and not dry_run:
         append_rows(ws_record, record_rows)
         record_appended = len(record_rows)
 
-    routine_status = []
-    failed = []
+    now_jst = datetime.now(JST)
+    today = now_jst.date()
+    routine_status, failed = [], []
     for cid in ROUTINE_STATUS_CHANNEL_IDS:
         row = _build_status_row(yt, cid)
         if row:
@@ -194,26 +222,101 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
         routine_status_appended = len(routine_status)
 
     targets = ws_search.get_all_values()[1:] if ws_search else []
-    picked, excluded_count, duplicated_count = _pick_status_batch_targets(targets, batch_limit, ROUTINE_STATUS_CHANNEL_IDS)
-    batch = []
-    ok = []
-    ng = []
+    deduped, excluded_count, duplicated_count = _dedupe_search_targets(targets, ROUTINE_STATUS_CHANNEL_IDS)
+    channel_ids = [cid for cid, _ in deduped]
+
+    master_rows = ws_master.get_all_values()[1:] if ws_master else []
+    header_idx = {k: i for i, k in enumerate(CHANNEL_MASTER_HEADER)}
+    master_by_id = {(r[0] if r else "").strip(): r for r in master_rows if r and r[0].strip()}
+
+    light_map = _fetch_channels_light_bulk(yt, channel_ids)
+    master_updates = []
+    candidates = []
+    light_success = light_failed = changed_count = unchanged_count = unseen_count = 0
+
+    for cid, order in deduped:
+        prev = master_by_id.get(cid, [""] * len(CHANNEL_MASTER_HEADER))
+        prev_video = int(prev[header_idx["last_video_count"]]) if prev[header_idx["last_video_count"]] else None
+        prev_detail = _parse_date(prev[header_idx["last_detail_fetched_at"]])
+        prev_latest = prev[header_idx["latest_upload_published_at"]]
+        prev_error = int(prev[header_idx["error_count"]] or 0) if len(prev) > header_idx["error_count"] else 0
+
+        item = light_map.get(cid)
+        if not item:
+            light_failed += 1
+            LOGGER.warning("light fetch failed: channel_id=%s reason=not_found", cid)
+            master_updates.append({"channel_id": cid, "error_count": prev_error + 1})
+            continue
+
+        light_success += 1
+        sn, st, cd = item.get("snippet") or {}, item.get("statistics") or {}, item.get("contentDetails") or {}
+        curr_video = int(st.get("videoCount", 0) or 0)
+        delta = "" if prev_video is None else curr_video - prev_video
+        unseen = prev_video is None or not prev_detail
+        changed = unseen or (delta != 0)
+        if unseen:
+            unseen_count += 1
+        if changed:
+            changed_count += 1
+        else:
+            unchanged_count += 1
+
+        latest_upload = prev_latest
+        uploads = ((cd.get("relatedPlaylists") or {}).get("uploads") or "")
+        if (not prev_latest) or (delta != "" and delta != 0):
+            latest_upload = _fetch_latest_upload_published_at(yt, uploads)
+
+        days_since = (today - prev_detail).days if prev_detail else 10**6
+        effective_age = days_since if changed else days_since - 3
+        candidates.append({"channel_id": cid, "order": order, "unseen": unseen, "changed": changed, "effective_age_days": effective_age})
+
+        master_updates.append({
+            "channel_id": cid,
+            "チャンネル名": sn.get("title", ""),
+            "uploads_playlist_id": uploads,
+            "last_light_fetched_at": now_jst.strftime("%Y/%m/%d"),
+            "last_video_count": curr_video,
+            "last_subscriber_count": int(st.get("subscriberCount", 0) or 0),
+            "last_view_count": int(st.get("viewCount", 0) or 0),
+            "latest_upload_published_at": latest_upload,
+            "last_video_count_delta": delta,
+            "error_count": 0,
+        })
+
+    selected = _select_status_batch(candidates, today, batch_limit)
+    picked = [x["channel_id"] for x in selected]
+
+    batch, ok, ng = [], [], []
     for cid in picked:
         row = _build_status_row(yt, cid)
         if row:
             batch.append(row)
             ok.append(cid)
+            for m in master_updates:
+                if m["channel_id"] == cid:
+                    m["last_detail_fetched_at"] = now_jst.strftime("%Y/%m/%d")
+                    break
         else:
             ng.append(cid)
+
     status_batch_appended = 0
     if batch and not dry_run:
         append_rows(ws_status, batch)
         status_batch_appended = len(batch)
 
-    LOGGER.info(
-        "status metrics: routine=%s search_read=%s excluded_routine=%s excluded_duplicate=%s picked=%s appended=%s",
-        len(routine_status), len(targets), excluded_count, duplicated_count, len(picked), routine_status_appended + status_batch_appended
-    )
+    if not dry_run and ws_master:
+        new_rows = []
+        for u in master_updates:
+            row = [""] * len(CHANNEL_MASTER_HEADER)
+            row[0] = u["channel_id"]
+            old = master_by_id.get(u["channel_id"])
+            if old:
+                row = (old + [""] * len(CHANNEL_MASTER_HEADER))[: len(CHANNEL_MASTER_HEADER)]
+            for k, v in u.items():
+                if k in header_idx:
+                    row[header_idx[k]] = str(v) if v is not None else ""
+            new_rows.append(row)
+        append_rows(ws_master, new_rows)
 
     return {
         "dry_run": dry_run,
@@ -231,4 +334,9 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
         "status_batch_source_count": len(targets),
         "status_batch_excluded_routine_count": excluded_count,
         "status_batch_excluded_duplicate_count": duplicated_count,
+        "status_batch_changed_count": changed_count,
+        "status_batch_unchanged_count": unchanged_count,
+        "status_batch_unseen_count": unseen_count,
+        "status_batch_light_fetch_success_count": light_success,
+        "status_batch_light_fetch_failed_count": light_failed,
     }

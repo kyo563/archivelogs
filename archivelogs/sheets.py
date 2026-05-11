@@ -7,7 +7,9 @@ from archivelogs.config import get_required_env, get_secret_value, load_service_
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 STATUS_SHEET_NAME = "Status"
 SEARCH_TARGET_SHEET_NAME = "検索対象"
+CHANNEL_MASTER_SHEET_NAME = "ChannelMaster"
 RECORD_HEADER = ["logged_at", "type", "title", "published_at", "duration_sec", "view_count", "like_count", "comment_count"]
+CHANNEL_MASTER_HEADER = ["チャンネルID", "チャンネル名", "uploads_playlist_id", "last_light_fetched_at", "last_detail_fetched_at", "last_video_count", "last_subscriber_count", "last_view_count", "latest_upload_published_at", "last_video_count_delta", "error_count"]
 STATUS_HEADER = ["取得日時", "チャンネルID", "チャンネル名", "登録者数", "動画本数", "総再生回数", "チャンネル開設日", "活動月数", "累計登録者数/活動月", "累計登録者数/動画", "累計動画あたり総再生回数", "累計総再生回数/登録者数", "1再生あたり登録者増", "動画あたりプレイリスト数", "活動月あたり動画本数", "登録者あたり動画本数", "上位プレイリスト1", "上位プレイリスト2", "上位プレイリスト3", "上位プレイリスト4", "上位プレイリスト5", "直近10日合計再生数", "直近10日投稿数", "直近10日トップ動画タイトル", "直近10日トップ動画再生数", "直近10日トップ動画シェア", "直近10日平均再生数/動画", "直近10日視聴/登録比", "直近30日合計再生数", "直近30日投稿数", "直近30日トップ動画タイトル", "直近30日トップ動画再生数", "直近30日トップ動画シェア", "直近30日平均再生数/動画", "直近30日視聴/登録比"]
 
 
@@ -73,6 +75,25 @@ def get_search_target_worksheet(create=True):
         ws.append_row(["チャンネルID", "チャンネル名"])
     return ws
 
+
+
+def get_channel_master_worksheet(create=True):
+    sh = _sheet()
+    try:
+        ws = sh.worksheet(CHANNEL_MASTER_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        if not create:
+            return None
+        ws = sh.add_worksheet(title=CHANNEL_MASTER_SHEET_NAME, rows=1000, cols=20)
+        ws.append_row(CHANNEL_MASTER_HEADER)
+        return ws
+    h = ws.row_values(1)
+    if create:
+        if not h:
+            ws.append_row(CHANNEL_MASTER_HEADER)
+        elif h != CHANNEL_MASTER_HEADER:
+            raise RuntimeError("ChannelMaster シートのヘッダーが CHANNEL_MASTER_HEADER と一致しません。")
+    return ws
 
 def append_rows(ws, rows, value_input_option="USER_ENTERED"):
     if rows and ws:
