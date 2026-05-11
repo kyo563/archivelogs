@@ -38,6 +38,12 @@ def main() -> int:
     print(f"[daily-auto-fetch] status batch picked={result.get('status_batch_picked', 0)}")
     print(f"[daily-auto-fetch] status batch planned={result.get('status_batch_planned', 0)}")
     print(f"[daily-auto-fetch] status batch appended={result.get('status_batch_appended', 0)}")
+    print(f"[daily-auto-fetch] status batch source count={result.get('status_batch_source_count', 0)}")
+    print(f"[daily-auto-fetch] status batch changed count={result.get('status_batch_changed_count', 0)}")
+    print(f"[daily-auto-fetch] status batch unchanged count={result.get('status_batch_unchanged_count', 0)}")
+    print(f"[daily-auto-fetch] status batch unseen count={result.get('status_batch_unseen_count', 0)}")
+    print(f"[daily-auto-fetch] status batch light fetch success={result.get('status_batch_light_fetch_success_count', 0)}")
+    print(f"[daily-auto-fetch] status batch light fetch failed={result.get('status_batch_light_fetch_failed_count', 0)}")
     return 0
 
 

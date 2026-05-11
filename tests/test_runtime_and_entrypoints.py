@@ -61,9 +61,18 @@ def test_import_config_symbols():
     assert callable(load_service_account_info)
 
 def test_run_daily_auto_jobs_normal_run_calls_append_rows(monkeypatch):
-    monkeypatch.setattr("archivelogs.jobs.get_youtube_client", lambda _: object())
+    class _Exec:
+        def __init__(self,p): self.p=p
+        def execute(self): return self.p
+    class _YT:
+        def channels(self): return type("C",(),{"list":lambda self,**k:_Exec({"items":[]})})()
+        def playlistItems(self): return type("P",(),{"list":lambda self,**k:_Exec({"items":[]})})()
+    monkeypatch.setattr("archivelogs.jobs.get_youtube_client", lambda _: _YT())
     monkeypatch.setattr("archivelogs.jobs.get_record_worksheet", lambda create=True: object())
     monkeypatch.setattr("archivelogs.jobs.get_status_worksheet", lambda create=True: object())
+    class MasterWS:
+        def get_all_values(self): return [["チャンネルID"]]
+    monkeypatch.setattr("archivelogs.jobs.get_channel_master_worksheet", lambda create=True: MasterWS())
 
     class SearchWS:
         def get_all_values(self):
