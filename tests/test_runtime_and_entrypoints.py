@@ -254,3 +254,9 @@ def test_daily_auto_fetch_workflow_dispatch_has_dry_run_input():
     assert "dry_run:" in text
     assert 'default: "true"' in text
     assert '--dry-run' in text
+
+
+def test_streamlit_uses_shared_jobs_for_batch_and_daily():
+    text = Path("app.py").read_text(encoding="utf-8")
+    assert "shared_run_search_target_status_batch(" in text
+    assert "shared_run_daily_auto_jobs(" in text

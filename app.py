@@ -32,6 +32,8 @@ from archivelogs.config import (
     load_service_account_info,
     set_runtime_config,
 )
+from archivelogs.jobs import run_daily_auto_jobs as shared_run_daily_auto_jobs
+from archivelogs.jobs import run_search_target_status_batch as shared_run_search_target_status_batch
 
 # ====================================
 # 共通設定
@@ -1590,51 +1592,13 @@ def run_routine_job(api_key: str) -> Dict:
     }
 
 
-def run_status_batch_job(api_key: str, batch_limit: int = 30) -> Dict:
-    filled_count = fill_missing_channel_names_on_search_target()
-    targets = read_search_targets()
-    if not targets:
-        return {
-            "filled_count": filled_count,
-            "picked_count": 0,
-            "ok_items": [],
-            "ng_items": [],
-        }
-
-    ordered_targets = sort_targets_by_staleness(targets)
-    picked = ordered_targets[: int(batch_limit)]
-
-    ws_status = get_status_worksheet()
-    result_rows: List[List] = []
-    ok_items: List[str] = []
-    ng_items: List[str] = []
-
-    for target in picked:
-        channel_id = target["channel_id"]
-        status = compute_channel_status(channel_id, api_key)
-        if status:
-            result_rows.append(build_status_row(status))
-            title = status.get("channel_title") or target.get("channel_name") or ""
-            ok_items.append(f"{channel_id} {title}".strip())
-        else:
-            ng_items.append(channel_id)
-
-    if result_rows:
-        append_rows(ws_status, result_rows)
-
-    return {
-        "filled_count": filled_count,
-        "picked_count": len(picked),
-        "ok_items": ok_items,
-        "ng_items": ng_items,
-    }
+# 互換のため残す（共通 jobs へ委譲）
+def run_status_batch_job(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
+    return shared_run_search_target_status_batch(api_key=api_key, batch_limit=batch_limit, dry_run=dry_run)
 
 
-def run_daily_auto_jobs(api_key: str, batch_limit: int = 30) -> Dict:
-    return {
-        "routine": run_routine_job(api_key),
-        "status_batch": run_status_batch_job(api_key, batch_limit=batch_limit),
-    }
+def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
+    return shared_run_daily_auto_jobs(api_key=api_key, batch_limit=batch_limit, dry_run=dry_run)
 
 
 # ====================================
@@ -1844,7 +1808,8 @@ def render_streamlit_app():
 
             st.markdown("---")
             st.markdown("#### 検索対象シートから古い順に一括更新")
-            st.caption("検索対象シートのA列（チャンネルID）を読み込み、Status の最終取得日時が古い順に追記します。")
+            st.caption("共通ロジック（archivelogs.jobs）で検索対象を一括更新します。")
+            status_dry_run = st.checkbox("dry-run（Status/ChannelMasterに書き込まない）", value=False, key="status_batch_dry_run")
             batch_limit = st.number_input(
                 "今回更新する最大件数",
                 min_value=1,
@@ -1853,49 +1818,29 @@ def render_streamlit_app():
                 step=1,
                 key="status_batch_limit",
             )
-            batch_btn = st.button("検索対象シートを読み込み、古い順で Status に追記")
+            batch_btn = st.button("検索対象30件を更新")
+            daily_btn = st.button("Actionと同じ日次処理を実行")
 
             if batch_btn:
-                with st.spinner("検索対象を読み込み、順次ステータスを取得中..."):
-                    filled_count = fill_missing_channel_names_on_search_target()
-                    if filled_count:
-                        st.info(f"検索対象シートのチャンネル名を {filled_count} 件補完しました（Statusシートの既存データを利用）。")
-                    targets = read_search_targets()
-                    if not targets:
-                        st.warning("検索対象シートにチャンネルIDがありません。A列を確認してください。")
-                    else:
-                        ordered_targets = sort_targets_by_staleness(targets)
-                        picked = ordered_targets[: int(batch_limit)]
-
-                        ws_status = get_status_worksheet()
-                        result_rows: List[List] = []
-                        ok_items: List[str] = []
-                        ng_items: List[str] = []
-                        progress = st.progress(0.0)
-
-                        for idx, target in enumerate(picked, start=1):
-                            channel_id = target["channel_id"]
-                            status = compute_channel_status(channel_id, api_key)
-                            if status:
-                                result_rows.append(build_status_row(status))
-                                title = status.get("channel_title") or target.get("channel_name") or ""
-                                ok_items.append(f"{channel_id} {title}".strip())
-                            else:
-                                ng_items.append(channel_id)
-                            progress.progress(idx / len(picked))
-
-                        if result_rows:
-                            append_rows(ws_status, result_rows)
-
-                        st.success(
-                            f"一括更新が完了しました（成功: {len(ok_items)}件 / 失敗: {len(ng_items)}件）。"
-                        )
-                        if ok_items:
-                            st.markdown("**成功したチャンネル**")
-                            st.write("\n".join(f"- {x}" for x in ok_items))
-                        if ng_items:
-                            st.markdown("**失敗したチャンネルID**")
-                            st.write("\n".join(f"- {x}" for x in ng_items))
+                with st.spinner("検索対象を更新中..."):
+                    result = shared_run_search_target_status_batch(api_key=api_key, batch_limit=int(batch_limit), dry_run=status_dry_run)
+                st.json({
+                    "status_batch_source_count": result.get("status_batch_source_count", 0),
+                    "status_batch_picked": result.get("status_batch_picked", 0),
+                    "status_batch_planned": result.get("status_batch_planned", 0),
+                    "status_batch_appended": result.get("status_batch_appended", 0),
+                    "status_batch_changed_count": result.get("status_batch_changed_count", 0),
+                    "status_batch_unchanged_count": result.get("status_batch_unchanged_count", 0),
+                    "status_batch_unseen_count": result.get("status_batch_unseen_count", 0),
+                    "status_batch_light_fetch_success_count": result.get("status_batch_light_fetch_success_count", 0),
+                    "status_batch_light_fetch_failed_count": result.get("status_batch_light_fetch_failed_count", 0),
+                    "ok_items": (result.get("status_batch") or {}).get("ok_items", []),
+                    "ng_items": (result.get("status_batch") or {}).get("ng_items", []),
+                })
+            if daily_btn:
+                with st.spinner("Actionと同じ日次処理を実行中..."):
+                    result = shared_run_daily_auto_jobs(api_key=api_key, batch_limit=int(batch_limit), dry_run=status_dry_run)
+                st.json(result)
 
     # ----------------------------
     # タブ3: チャンネルステータス解析（TXT/コピーのみ）
