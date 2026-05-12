@@ -190,13 +190,10 @@ def _select_status_batch(candidates, today: date, batch_limit: int):
     return sorted_items[: int(batch_limit)]
 
 
-def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
+def run_record_update(api_key: str, dry_run: bool = False) -> Dict:
     configure_logging()
     yt = get_youtube_client(api_key)
     ws_record = get_record_worksheet(create=not dry_run)
-    ws_status = get_status_worksheet(create=not dry_run)
-    ws_search = get_search_target_worksheet(create=not dry_run)
-    ws_master = get_channel_master_worksheet(create=not dry_run)
 
     ids = fetch_upload_video_ids(yt, ROUTINE_RECORD_CHANNEL_ID, 50)
     by_id = fetch_videos_bulk(yt, ids)
@@ -207,8 +204,18 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
         append_rows(ws_record, record_rows)
         record_appended = len(record_rows)
 
-    now_jst = datetime.now(JST)
-    today = now_jst.date()
+    return {
+        "record_target_count": len(items),
+        "record_rows_planned": len(record_rows),
+        "record_rows_appended": record_appended,
+        "diag": diag,
+    }
+
+
+def run_routine_status_update(api_key: str, dry_run: bool = False) -> Dict:
+    configure_logging()
+    yt = get_youtube_client(api_key)
+    ws_status = get_status_worksheet(create=not dry_run)
     routine_status, failed = [], []
     for cid in ROUTINE_STATUS_CHANNEL_IDS:
         row = _build_status_row(yt, cid)
@@ -221,6 +228,21 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
         append_rows(ws_status, routine_status)
         routine_status_appended = len(routine_status)
 
+    return {
+        "routine_status_planned": len(routine_status),
+        "routine_status_appended": routine_status_appended,
+        "routine": {"status_count": len(routine_status), "failed_status_ids": failed},
+    }
+
+
+def run_search_target_status_batch(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
+    configure_logging()
+    yt = get_youtube_client(api_key)
+    ws_status = get_status_worksheet(create=not dry_run)
+    ws_search = get_search_target_worksheet(create=not dry_run)
+    ws_master = get_channel_master_worksheet(create=not dry_run)
+    now_jst = datetime.now(JST)
+    today = now_jst.date()
     targets = ws_search.get_all_values()[1:] if ws_search else []
     deduped, excluded_count, duplicated_count = _dedupe_search_targets(targets, ROUTINE_STATUS_CHANNEL_IDS)
     channel_ids = [cid for cid, _ in deduped]
@@ -319,18 +341,10 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
         append_rows(ws_master, new_rows)
 
     return {
-        "dry_run": dry_run,
-        "record_target_count": len(items),
-        "record_rows_planned": len(record_rows),
-        "record_rows_appended": record_appended,
-        "routine_status_planned": len(routine_status),
-        "routine_status_appended": routine_status_appended,
         "status_batch_picked": len(picked),
         "status_batch_planned": len(batch),
         "status_batch_appended": status_batch_appended,
-        "routine": {"record_count": len(record_rows), "status_count": len(routine_status), "failed_status_ids": failed},
         "status_batch": {"picked_count": len(picked), "ok_items": ok, "ng_items": ng, "filled_count": 0},
-        "diag": diag,
         "status_batch_source_count": len(targets),
         "status_batch_excluded_routine_count": excluded_count,
         "status_batch_excluded_duplicate_count": duplicated_count,
@@ -339,4 +353,21 @@ def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = Fal
         "status_batch_unseen_count": unseen_count,
         "status_batch_light_fetch_success_count": light_success,
         "status_batch_light_fetch_failed_count": light_failed,
+    }
+
+
+def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
+    record = run_record_update(api_key=api_key, dry_run=dry_run)
+    routine = run_routine_status_update(api_key=api_key, dry_run=dry_run)
+    batch = run_search_target_status_batch(api_key=api_key, batch_limit=batch_limit, dry_run=dry_run)
+    return {
+        "dry_run": dry_run,
+        **record,
+        **routine,
+        **batch,
+        "routine": {
+            "record_count": record["record_rows_planned"],
+            "status_count": routine["routine"]["status_count"],
+            "failed_status_ids": routine["routine"]["failed_status_ids"],
+        },
     }
