@@ -1243,6 +1243,88 @@ function appendErrorLog_(ss, functionName, stage, err, meta) {
   } catch (loggingErr) {}
 }
 
+
+/**
+ * Google Sheets の日付シリアル値を Date に変換します。
+ */
+function sheetSerialToDate_(serial) {
+  if (typeof serial !== 'number' || !isFinite(serial)) return null;
+  if (serial < 30000 || serial > 80000) return null;
+  const epoch = new Date(Date.UTC(1899, 11, 30));
+  const ms = serial * 24 * 60 * 60 * 1000;
+  const dt = new Date(epoch.getTime() + ms);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+/**
+ * record.logged_at の文字列を安全に Date へ変換します。
+ */
+function parseRecordLoggedAtText_(text) {
+  if (text == null || text === '') return null;
+  const s = String(text).trim();
+  if (!s) return null;
+
+  let m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  if (!m) {
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  }
+
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    const h = m[4] != null ? Number(m[4]) : 0;
+    const mi = m[5] != null ? Number(m[5]) : 0;
+    const sec = m[6] != null ? Number(m[6]) : 0;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 59) return null;
+    const dt = new Date(y, mo - 1, d, h, mi, sec);
+    if (
+      dt.getFullYear() !== y ||
+      dt.getMonth() !== mo - 1 ||
+      dt.getDate() !== d ||
+      dt.getHours() !== h ||
+      dt.getMinutes() !== mi ||
+      dt.getSeconds() !== sec
+    ) {
+      return null;
+    }
+    return dt;
+  }
+
+  // ISO 8601 形式のみ許可して Date 変換
+  const isoLike = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})$/;
+  if (isoLike.test(s)) {
+    const parsed = new Date(s);
+    if (!isNaN(parsed.getTime())) return parsed;
+  }
+
+  return null;
+}
+
+/**
+ * record.logged_at を正規化します。
+ */
+function normalizeLoggedAtForRecord_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return { value: value, normalized: false, failed: false };
+  }
+
+  if (typeof value === 'number') {
+    const serialDate = sheetSerialToDate_(value);
+    if (serialDate) return { value: serialDate, normalized: true, failed: false };
+    return { value: value, normalized: false, failed: true };
+  }
+
+  const parsed = parseRecordLoggedAtText_(value);
+  if (parsed) return { value: parsed, normalized: true, failed: false };
+
+  if (value == null || value === '') {
+    return { value: '', normalized: false, failed: false };
+  }
+
+  return { value: value, normalized: false, failed: true };
+}
+
 /**
  * record 行データの様式を統一します。
  */
@@ -1250,12 +1332,17 @@ function normalizeRecordRows_(values, formulas) {
   const normalized = [];
   let filledTitle = 0;
   let filledType = 0;
+  let normalizedLoggedAt = 0;
+  let failedLoggedAt = 0;
 
   for (let i = 0; i < values.length; i++) {
     const row = values[i] || [];
     const titleFormula = formulas[i] && formulas[i][0] ? formulas[i][0] : '';
 
-    const loggedAt = row[0] || '';
+    const loggedAtResult = normalizeLoggedAtForRecord_(row[0]);
+    const loggedAt = loggedAtResult.value;
+    if (loggedAtResult.normalized) normalizedLoggedAt++;
+    if (loggedAtResult.failed) failedLoggedAt++;
 
     let type = row[1] != null ? String(row[1]).trim().toLowerCase() : '';
     if (type !== 'video' && type !== 'live' && type !== 'short') {
@@ -1279,7 +1366,13 @@ function normalizeRecordRows_(values, formulas) {
 
   return {
     rows: normalized,
-    stats: { total: normalized.length, filledTitle: filledTitle, filledType: filledType }
+    stats: {
+      total: normalized.length,
+      filledTitle: filledTitle,
+      filledType: filledType,
+      normalizedLoggedAt: normalizedLoggedAt,
+      failedLoggedAt: failedLoggedAt
+    }
   };
 }
 
@@ -1463,6 +1556,7 @@ function compressRecordAndUpdateSummary() {
       recordSheet.getRange(2, 1, numRows, lastCol).clearContent();
       if (compressedAllRows.length > 0) {
         recordSheet.getRange(2, 1, compressedAllRows.length, 8).setValues(compressedAllRows);
+        recordSheet.getRange(2, 1, compressedAllRows.length, 1).setNumberFormat('yyyy/mm/dd hh:mm');
       }
       setBordersForUsedRange_(recordSheet);
 
@@ -1496,7 +1590,7 @@ function compressRecordAndUpdateSummary() {
         'record の圧縮と summary の更新が完了しました。\n' +
         'record の行数（ヘッダー除く）: ' + compressedAllRows.length + '\n' +
         'summary の動画数: ' + summaryRows.length + '\n' +
-        '様式統一: type補完 ' + normalizedStats.filledType + ' 件 / title補完 ' + normalizedStats.filledTitle + ' 件'
+        '様式統一: type補完 ' + normalizedStats.filledType + ' 件 / title補完 ' + normalizedStats.filledTitle + ' 件 / logged_at正規化 ' + normalizedStats.normalizedLoggedAt + ' 件 / logged_at未変換 ' + normalizedStats.failedLoggedAt + ' 件'
       );
     } catch (err) {
       appendErrorLog_(ss, 'compressRecordAndUpdateSummary', 'main', err, {
