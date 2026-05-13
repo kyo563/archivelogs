@@ -13,12 +13,12 @@ const CHANNEL_NAME_AUTOFILL_TARGET_SHEET = '検索対象';
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('ログツール')
-    .addItem('record 圧縮＋summary 更新', 'compressRecordAndUpdateSummary')
+    .addItem('record 圧縮', 'compressRecordAndUpdateSummary')
     .addItem('選択動画の履歴テーブル作成', 'createHistoryForSelectedVideo')
-    .addItem('Status 重複削除（同一日付×同一チャンネル）', 'dedupeStatusSheet')
+    .addItem('Status 重複削除', 'dedupeStatusSheet')
     .addSeparator()
-    .addItem('月次サマリ更新（Status → 月単位）', 'buildMonthlySummaryFromStatus')
-    .addItem('type 別集計更新（summary → type 別）', 'buildTypeAnalyticsFromSummary')
+    .addItem('月次サマリ更新', 'buildMonthlySummaryFromStatus')
+    .addItem('type 別集計更新', 'buildTypeAnalyticsFromSummary')
     .addItem('成長プロファイル更新', 'buildGrowthProfileFromSummary')
     .addItem('週間チャンネル概況更新', 'buildWeeklyChannelOverview')
     .addToUi();
