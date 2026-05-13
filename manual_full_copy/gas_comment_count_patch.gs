@@ -1750,28 +1750,121 @@ function dedupeStatusSheet() {
     }
 
     const deleted = deletedByError + deletedByDuplicate;
+    if (deleted > 0) {
+      range.clearContent();
+      if (kept.length > 0) {
+        sheet.getRange(2, 1, kept.length, lastCol).setValues(kept);
+      }
+    }
+
+    const cmResult = compactChannelMasterSheet_(ss);
+
+    const lines = [];
     if (deleted === 0) {
-      SpreadsheetApp.getUi().alert('Status シートに削除対象行はありませんでした。');
-      return;
+      lines.push('Status シートに削除対象行はありませんでした。');
+    } else {
+      lines.push('Status シートの重複削除が完了しました。');
+      lines.push('削除行数(合計): ' + deleted);
+      lines.push('  ・同一日付×同一チャンネルの重複: ' + deletedByDuplicate);
+      lines.push('  ・I〜M列に0を含む行: ' + deletedByError);
+    }
+    lines.push('');
+    lines.push('ChannelMaster 圧縮:');
+    if (!cmResult.sheetFound) {
+      lines.push('  ・シートが見つからないためスキップしました。');
+    } else {
+      lines.push('  ・シート: あり');
+      lines.push('  ・走査行数: ' + cmResult.scanned);
+      lines.push('  ・残存行数: ' + cmResult.kept);
+      lines.push('  ・削除行数: ' + cmResult.deleted);
+      lines.push('  ・チャンネルID空欄行: ' + cmResult.blankIdRows);
+    }
+    lines.push('');
+    lines.push('判定条件:');
+    lines.push('  ・同一日付（時刻は無視）×同一チャンネルIDで最古時刻を1行だけ残す');
+    lines.push('  ・I〜M列に0を含む行は削除');
+    lines.push('補足:');
+    lines.push('  ・速度優先のため deleteRow は使わず、一括書き戻しに変更しています。');
+    SpreadsheetApp.getUi().alert(lines.join('\n'));
+  }, null, ['Status', 'ChannelMaster']);
+}
+
+function compactChannelMasterSheet_(ss) {
+  const result = {
+    sheetFound: false,
+    scanned: 0,
+    kept: 0,
+    deleted: 0,
+    blankIdRows: 0
+  };
+
+  try {
+    const sheet = ss.getSheetByName('ChannelMaster');
+    if (!sheet) return result;
+    result.sheetFound = true;
+
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
+    if (lastRow < 2 || lastCol < 1) return result;
+
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    let channelIdIdx = 0;
+    for (let i = 0; i < headers.length; i++) {
+      if (String(headers[i]).trim() === 'channel_id') {
+        channelIdIdx = i;
+        break;
+      }
+    }
+    if (channelIdIdx === 0 && String(headers[0]).trim() !== 'channel_id') {
+      for (let i = 0; i < headers.length; i++) {
+        if (String(headers[i]).trim() === 'チャンネルID') {
+          channelIdIdx = i;
+          break;
+        }
+      }
     }
 
-    range.clearContent();
-    if (kept.length > 0) {
-      sheet.getRange(2, 1, kept.length, lastCol).setValues(kept);
+    const numRows = lastRow - 1;
+    const dataRange = sheet.getRange(2, 1, numRows, lastCol);
+    const values = dataRange.getValues();
+    result.scanned = values.length;
+
+    const latestByChannelId = {};
+    const blankIdRows = [];
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      const channelId = normalizeChannelId_(row[channelIdIdx]);
+      if (!channelId) {
+        blankIdRows.push({ row: row, originalIndex: i });
+        continue;
+      }
+      latestByChannelId[channelId] = { row: row, originalIndex: i };
     }
 
-    SpreadsheetApp.getUi().alert(
-      'Status シートの重複削除が完了しました。\n' +
-      '削除行数(合計): ' + deleted + '\n' +
-      '  ・同一日付×同一チャンネルの重複: ' + deletedByDuplicate + '\n' +
-      '  ・I〜M列に0を含む行: ' + deletedByError + '\n' +
-      '判定条件:\n' +
-      '  ・同一日付（時刻は無視）×同一チャンネルIDで最古時刻を1行だけ残す\n' +
-      '  ・I〜M列に0を含む行は削除\n' +
-      '補足:\n' +
-      '  ・速度優先のため deleteRow は使わず、一括書き戻しに変更しています。'
-    );
-  }, null, ['Status']);
+    const keptRows = Object.keys(latestByChannelId)
+      .map(function(key) { return latestByChannelId[key]; })
+      .sort(function(a, b) { return a.originalIndex - b.originalIndex; })
+      .map(function(item) { return item.row; });
+
+    for (let i = 0; i < blankIdRows.length; i++) {
+      keptRows.push(blankIdRows[i].row);
+    }
+
+    result.blankIdRows = blankIdRows.length;
+    result.kept = keptRows.length;
+    result.deleted = result.scanned - result.kept;
+
+    dataRange.clearContent();
+    if (keptRows.length > 0) {
+      sheet.getRange(2, 1, keptRows.length, lastCol).setValues(keptRows);
+    }
+    setBordersForUsedRange_(sheet);
+
+    return result;
+  } catch (err) {
+    appendErrorLog_(ss, 'compactChannelMasterSheet_', 'main', err, {});
+    throw err;
+  }
 }
 
 /**
