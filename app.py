@@ -32,7 +32,6 @@ from archivelogs.config import (
     load_service_account_info,
     set_runtime_config,
 )
-from archivelogs.jobs import run_daily_auto_jobs as shared_run_daily_auto_jobs
 from archivelogs.jobs import run_search_target_status_batch as shared_run_search_target_status_batch
 
 # ====================================
@@ -1597,10 +1596,6 @@ def run_status_batch_job(api_key: str, batch_limit: int = 30, dry_run: bool = Fa
     return shared_run_search_target_status_batch(api_key=api_key, batch_limit=batch_limit, dry_run=dry_run)
 
 
-def run_daily_auto_jobs(api_key: str, batch_limit: int = 30, dry_run: bool = False) -> Dict:
-    return shared_run_daily_auto_jobs(api_key=api_key, batch_limit=batch_limit, dry_run=dry_run)
-
-
 # ====================================
 # UI 本体
 # ====================================
@@ -1818,12 +1813,12 @@ def render_streamlit_app():
                 step=1,
                 key="status_batch_limit",
             )
-            batch_btn = st.button("検索対象30件を更新")
-            daily_btn = st.button("Actionと同じ日次処理を実行")
+            batch_btn = st.button("ステータスを取得", key="run_status_batch")
 
             if batch_btn:
                 with st.spinner("検索対象を更新中..."):
                     result = shared_run_search_target_status_batch(api_key=api_key, batch_limit=int(batch_limit), dry_run=status_dry_run)
+                st.success("ステータス取得が完了しました。")
                 st.json({
                     "status_batch_source_count": result.get("status_batch_source_count", 0),
                     "status_batch_picked": result.get("status_batch_picked", 0),
@@ -1837,10 +1832,6 @@ def render_streamlit_app():
                     "ok_items": (result.get("status_batch") or {}).get("ok_items", []),
                     "ng_items": (result.get("status_batch") or {}).get("ng_items", []),
                 })
-            if daily_btn:
-                with st.spinner("Actionと同じ日次処理を実行中..."):
-                    result = shared_run_daily_auto_jobs(api_key=api_key, batch_limit=int(batch_limit), dry_run=status_dry_run)
-                st.json(result)
 
     # ----------------------------
     # タブ3: チャンネルステータス解析（TXT/コピーのみ）
