@@ -21,6 +21,7 @@ function onOpen() {
     .addItem('type 別集計更新', 'buildTypeAnalyticsFromSummary')
     .addItem('成長プロファイル更新', 'buildGrowthProfileFromSummary')
     .addItem('週間チャンネル概況更新', 'buildWeeklyChannelOverview')
+    .addItem('週間再生数更新', 'createWeeklyViewReport')
     .addToUi();
 }
 
@@ -2434,4 +2435,208 @@ function buildGrowthProfileFromSummary() {
       '動画数: ' + growthRows.length
     );
   });
+}
+
+
+/**
+ * record シートから、動画タイプ別・公開年月別・公開週別に、
+ * 初回スナップショット日から10日目までの平均再生数を集計します。
+ */
+function createWeeklyViewReport() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const timeZone = ss.getSpreadsheetTimeZone();
+  const sourceSheet = ss.getSheetByName('record');
+  if (!sourceSheet) {
+    throw new Error('record シートが見つかりません。');
+  }
+
+  const values = sourceSheet.getDataRange().getValues();
+  const outputSheetName = '週間再生数';
+  let outputSheet = ss.getSheetByName(outputSheetName);
+  if (!outputSheet) outputSheet = ss.insertSheet(outputSheetName);
+
+  outputSheet.clearContents();
+  outputSheet.clearFormats();
+
+  const header = [
+    '公開年月',
+    '公開週',
+    'type',
+    '動画本数',
+    '1日目平均再生数',
+    '2日目平均再生数',
+    '3日目平均再生数',
+    '4日目平均再生数',
+    '5日目平均再生数',
+    '6日目平均再生数',
+    '7日目平均再生数',
+    '8日目平均再生数',
+    '9日目平均再生数',
+    '10日目平均再生数'
+  ];
+
+  if (values.length < 2) {
+    outputSheet.getRange(1, 1, 1, header.length).setValues([header]);
+    outputSheet.getRange(1, 1, 1, header.length).setFontWeight('bold');
+    outputSheet.autoResizeColumns(1, header.length);
+    Logger.log('週間再生数: 入力行数=0, 有効行数=0, 動画数=0, 出力グループ数=0');
+    return;
+  }
+
+  const validTypes = { live: true, shorts: true, video: true };
+  const videos = {};
+  let validRowCount = 0;
+  let skippedRowCount = 0;
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    const loggedAt = parseWeeklyReportDate_(row[0]);
+    const type = row[1] != null ? String(row[1]).trim() : '';
+    const publishedAt = parseWeeklyReportDate_(row[3]);
+    const viewCount = Number(row[5]);
+
+    if (!loggedAt || !publishedAt || !validTypes[type] || !isFinite(viewCount)) {
+      skippedRowCount++;
+      continue;
+    }
+
+    const videoKey = normalizeWeeklyReportDate_(publishedAt, timeZone);
+    const loggedDateKey = normalizeWeeklyReportDate_(loggedAt, timeZone);
+
+    if (!videos[videoKey]) {
+      videos[videoKey] = {
+        type: type,
+        publishedAt: publishedAt,
+        publishedMonth: formatWeeklyReportPublishedMonth_(publishedAt, timeZone),
+        publishedWeek: getWeeklyReportPublishedWeek_(publishedAt, timeZone),
+        dailySnapshots: {}
+      };
+    }
+
+    const video = videos[videoKey];
+    const existing = video.dailySnapshots[loggedDateKey];
+    if (!existing || loggedAt.getTime() > existing.loggedAt.getTime()) {
+      video.dailySnapshots[loggedDateKey] = {
+        loggedAt: loggedAt,
+        viewCount: viewCount
+      };
+    }
+
+    validRowCount++;
+  }
+
+  const groups = {};
+  let videoCount = 0;
+
+  Object.keys(videos).forEach(function(videoKey) {
+    const video = videos[videoKey];
+    const dayKeys = Object.keys(video.dailySnapshots).sort();
+    if (dayKeys.length === 0) return;
+
+    videoCount++;
+    const firstSnapshotDate = dayKeys[0];
+    const groupKey = video.publishedMonth + '\t' + video.publishedWeek + '\t' + video.type;
+
+    if (!groups[groupKey]) {
+      groups[groupKey] = {
+        publishedMonth: video.publishedMonth,
+        publishedWeek: video.publishedWeek,
+        type: video.type,
+        videoKeys: {},
+        sums: Array(10).fill(0),
+        counts: Array(10).fill(0)
+      };
+    }
+
+    const group = groups[groupKey];
+    group.videoKeys[videoKey] = true;
+
+    dayKeys.forEach(function(dayKey) {
+      const dayIndex = diffWeeklyReportDays_(firstSnapshotDate, dayKey);
+      if (dayIndex < 0 || dayIndex > 9) return;
+
+      group.sums[dayIndex] += video.dailySnapshots[dayKey].viewCount;
+      group.counts[dayIndex]++;
+    });
+  });
+
+  const typeOrder = { live: 1, shorts: 2, video: 3 };
+  const rows = Object.keys(groups).map(function(groupKey) {
+    const group = groups[groupKey];
+    const averages = group.sums.map(function(sum, index) {
+      if (group.counts[index] === 0) return '';
+      return Math.round((sum / group.counts[index]) * 10) / 10;
+    });
+
+    return [
+      group.publishedMonth,
+      group.publishedWeek,
+      group.type,
+      Object.keys(group.videoKeys).length
+    ].concat(averages);
+  });
+
+  rows.sort(function(a, b) {
+    const monthA = parseWeeklyReportMonthSortKey_(a[0]);
+    const monthB = parseWeeklyReportMonthSortKey_(b[0]);
+    if (monthA !== monthB) return monthA - monthB;
+    if (a[1] !== b[1]) return a[1] - b[1];
+    return typeOrder[a[2]] - typeOrder[b[2]];
+  });
+
+  const output = [header].concat(rows);
+  outputSheet.getRange(1, 1, output.length, header.length).setValues(output);
+  outputSheet.getRange(1, 1, 1, header.length).setFontWeight('bold');
+  outputSheet.autoResizeColumns(1, header.length);
+
+  Logger.log(
+    '週間再生数: 入力行数=' + (values.length - 1) +
+    ', 有効行数=' + validRowCount +
+    ', スキップ行数=' + skippedRowCount +
+    ', 動画数=' + videoCount +
+    ', 出力グループ数=' + rows.length
+  );
+}
+
+/** 値を Date に変換します。失敗した場合は null を返します。 */
+function parseWeeklyReportDate_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) return value;
+  if (value == null || value === '') return null;
+
+  const date = new Date(value);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+/** 日付をスプレッドシートのタイムゾーンで yyyy-MM-dd に正規化します。 */
+function normalizeWeeklyReportDate_(date, timeZone) {
+  return Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
+}
+
+/** 公開年月を yyyy年M月 形式にします。 */
+function formatWeeklyReportPublishedMonth_(date, timeZone) {
+  return Utilities.formatDate(date, timeZone, 'yyyy年M月');
+}
+
+/** published_at の日付から月内週番号を返します。 */
+function getWeeklyReportPublishedWeek_(date, timeZone) {
+  const day = Number(Utilities.formatDate(date, timeZone, 'd'));
+  if (day <= 7) return 1;
+  if (day <= 14) return 2;
+  if (day <= 21) return 3;
+  if (day <= 28) return 4;
+  return 5;
+}
+
+/** yyyy-MM-dd 同士の差分日数を返します。 */
+function diffWeeklyReportDays_(startDateKey, endDateKey) {
+  const start = new Date(startDateKey + 'T00:00:00Z');
+  const end = new Date(endDateKey + 'T00:00:00Z');
+  return Math.floor((end.getTime() - start.getTime()) / 86400000);
+}
+
+/** yyyy年M月 を並び替え用の数値に変換します。 */
+function parseWeeklyReportMonthSortKey_(monthText) {
+  const match = String(monthText).match(/^(\d{4})年(\d{1,2})月$/);
+  if (!match) return 0;
+  return Number(match[1]) * 100 + Number(match[2]);
 }
