@@ -2483,22 +2483,31 @@ function createWeeklyViewReport() {
     return;
   }
 
-  const validTypes = { live: true, shorts: true, video: true };
   const videos = {};
+  const typeCounts = { live: 0, short: 0, video: 0 };
   let validRowCount = 0;
   let skippedRowCount = 0;
+  let skippedInvalidType = 0;
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
     const loggedAt = parseWeeklyReportDate_(row[0]);
-    const type = row[1] != null ? String(row[1]).trim() : '';
+    const type = normalizeType(row[1]);
     const publishedAt = parseWeeklyReportDate_(row[3]);
     const viewCount = Number(row[5]);
 
-    if (!loggedAt || !publishedAt || !validTypes[type] || !isFinite(viewCount)) {
+    if (!type) {
+      skippedInvalidType++;
       skippedRowCount++;
       continue;
     }
+
+    if (!loggedAt || !publishedAt || !isFinite(viewCount)) {
+      skippedRowCount++;
+      continue;
+    }
+
+    typeCounts[type]++;
 
     const videoKey = normalizeWeeklyReportDate_(publishedAt, timeZone);
     const loggedDateKey = normalizeWeeklyReportDate_(loggedAt, timeZone);
@@ -2560,7 +2569,7 @@ function createWeeklyViewReport() {
     });
   });
 
-  const typeOrder = { live: 1, shorts: 2, video: 3 };
+  const typeOrder = { live: 1, short: 2, video: 3 };
   const rows = Object.keys(groups).map(function(groupKey) {
     const group = groups[groupKey];
     const averages = group.sums.map(function(sum, index) {
@@ -2593,9 +2602,23 @@ function createWeeklyViewReport() {
     '週間再生数: 入力行数=' + (values.length - 1) +
     ', 有効行数=' + validRowCount +
     ', スキップ行数=' + skippedRowCount +
+    ', 不正typeスキップ行数=' + skippedInvalidType +
     ', 動画数=' + videoCount +
     ', 出力グループ数=' + rows.length
   );
+  Logger.log('Skipped invalid type rows: ' + skippedInvalidType);
+  Logger.log(JSON.stringify(typeCounts));
+}
+
+/** record の type 値を集計用の表記に正規化します。 */
+function normalizeType(value) {
+  const s = String(value || '').trim().toLowerCase();
+
+  if (s === 'live') return 'live';
+  if (s === 'short' || s === 'shorts') return 'short';
+  if (s === 'video') return 'video';
+
+  return '';
 }
 
 /** 値を Date に変換します。失敗した場合は null を返します。 */
