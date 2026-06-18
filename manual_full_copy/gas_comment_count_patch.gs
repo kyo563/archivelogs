@@ -150,6 +150,40 @@ function extractVideoIdFromText_(text) {
   return '';
 }
 
+
+/**
+ * record シート C列 title セルから YouTube video_id を取得します。
+ * リッチテキストリンク、HYPERLINK 数式、表示文字列の順に候補として確認します。
+ */
+function extractVideoIdFromTitleCell_(richTextValue, formula, displayValue) {
+  const candidates = [];
+
+  if (richTextValue) {
+    try {
+      const wholeLink = richTextValue.getLinkUrl();
+      if (wholeLink) candidates.push(wholeLink);
+    } catch (e) {}
+
+    try {
+      const runs = richTextValue.getRuns ? richTextValue.getRuns() : [];
+      for (let i = 0; i < runs.length; i++) {
+        const runLink = runs[i].getLinkUrl();
+        if (runLink) candidates.push(runLink);
+      }
+    } catch (e) {}
+  }
+
+  if (formula) candidates.push(formula);
+  if (displayValue) candidates.push(displayValue);
+
+  for (let i = 0; i < candidates.length; i++) {
+    const videoId = extractVideoIdFromText_(candidates[i]);
+    if (videoId) return videoId;
+  }
+
+  return '';
+}
+
 /**
  * シート上で「実際にデータが入っている範囲」に罫線を引きます。
  * （1行目のヘッダーを含め、最終行・最終列まで）
@@ -2451,12 +2485,24 @@ function createWeeklyViewReport() {
   }
 
   const values = sourceSheet.getDataRange().getValues();
+  const lastRow = sourceSheet.getLastRow();
+  const titleRange = lastRow >= 2 ? sourceSheet.getRange(2, 3, lastRow - 1, 1) : null;
+  const titleRichTextValues = titleRange ? titleRange.getRichTextValues() : [];
+  const titleFormulas = titleRange ? titleRange.getFormulas() : [];
+
   const outputSheetName = '週間再生数';
   let outputSheet = ss.getSheetByName(outputSheetName);
   if (!outputSheet) outputSheet = ss.insertSheet(outputSheetName);
 
   outputSheet.clearContents();
   outputSheet.clearFormats();
+
+  const debugSheetName = '週間再生数_debug';
+  let debugSheet = ss.getSheetByName(debugSheetName);
+  if (!debugSheet) debugSheet = ss.insertSheet(debugSheetName);
+
+  debugSheet.clearContents();
+  debugSheet.clearFormats();
 
   const header = [
     '公開年月',
@@ -2475,11 +2521,37 @@ function createWeeklyViewReport() {
     '10日目平均再生数'
   ];
 
+  const debugHeader = [
+    'videoKey',
+    'videoId',
+    'type',
+    'published_at',
+    '公開年月',
+    '公開週',
+    '初回snapshot日',
+    '1日目view',
+    '2日目view',
+    '3日目view',
+    '4日目view',
+    '5日目view',
+    '6日目view',
+    '7日目view',
+    '8日目view',
+    '9日目view',
+    '10日目view'
+  ];
+
   if (values.length < 2) {
     outputSheet.getRange(1, 1, 1, header.length).setValues([header]);
     outputSheet.getRange(1, 1, 1, header.length).setFontWeight('bold');
     outputSheet.autoResizeColumns(1, header.length);
-    Logger.log('週間再生数: 入力行数=0, 有効行数=0, 動画数=0, 出力グループ数=0');
+    debugSheet.getRange(1, 1, 1, debugHeader.length).setValues([debugHeader]);
+    debugSheet.getRange(1, 1, 1, debugHeader.length).setFontWeight('bold');
+    debugSheet.autoResizeColumns(1, debugHeader.length);
+    Logger.log('週間再生数: 入力行数=0, 有効行数=0, スキップ行数=0, 不正typeスキップ行数=0, 動画ID取得失敗スキップ行数=0, 動画数=0, 出力グループ数=0');
+    Logger.log('type別行数=' + JSON.stringify({ live: 0, short: 0, video: 0 }));
+    Logger.log('type別ユニーク動画数=' + JSON.stringify({ live: 0, short: 0, video: 0 }));
+    Logger.log('liveのユニーク動画数=0');
     return;
   }
 
@@ -2488,16 +2560,28 @@ function createWeeklyViewReport() {
   let validRowCount = 0;
   let skippedRowCount = 0;
   let skippedInvalidType = 0;
+  let skippedMissingVideoId = 0;
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
+    const titleIndex = i - 1;
     const loggedAt = parseWeeklyReportDate_(row[0]);
     const type = normalizeType(row[1]);
+    const displayTitle = row[2];
     const publishedAt = parseWeeklyReportDate_(row[3]);
     const viewCount = Number(row[5]);
+    const titleRichText = titleRichTextValues[titleIndex] ? titleRichTextValues[titleIndex][0] : null;
+    const titleFormula = titleFormulas[titleIndex] ? titleFormulas[titleIndex][0] : '';
+    const videoId = extractVideoIdFromTitleCell_(titleRichText, titleFormula, displayTitle);
 
     if (!type) {
       skippedInvalidType++;
+      skippedRowCount++;
+      continue;
+    }
+
+    if (!videoId) {
+      skippedMissingVideoId++;
       skippedRowCount++;
       continue;
     }
@@ -2509,11 +2593,13 @@ function createWeeklyViewReport() {
 
     typeCounts[type]++;
 
-    const videoKey = normalizeWeeklyReportDate_(publishedAt, timeZone);
+    const publishedAtKey = String(publishedAt.getTime());
+    const videoKey = type + '\t' + publishedAtKey + '\t' + videoId;
     const loggedDateKey = normalizeWeeklyReportDate_(loggedAt, timeZone);
 
     if (!videos[videoKey]) {
       videos[videoKey] = {
+        videoId: videoId,
         type: type,
         publishedAt: publishedAt,
         publishedMonth: formatWeeklyReportPublishedMonth_(publishedAt, timeZone),
@@ -2535,6 +2621,8 @@ function createWeeklyViewReport() {
   }
 
   const groups = {};
+  const debugRows = [];
+  const uniqueVideoCountsByType = { live: 0, short: 0, video: 0 };
   let videoCount = 0;
 
   Object.keys(videos).forEach(function(videoKey) {
@@ -2543,6 +2631,7 @@ function createWeeklyViewReport() {
     if (dayKeys.length === 0) return;
 
     videoCount++;
+    uniqueVideoCountsByType[video.type]++;
     const firstSnapshotDate = dayKeys[0];
     const groupKey = video.publishedMonth + '\t' + video.publishedWeek + '\t' + video.type;
 
@@ -2558,15 +2647,28 @@ function createWeeklyViewReport() {
     }
 
     const group = groups[groupKey];
+    const debugViews = Array(10).fill('');
     group.videoKeys[videoKey] = true;
 
     dayKeys.forEach(function(dayKey) {
       const dayIndex = diffWeeklyReportDays_(firstSnapshotDate, dayKey);
       if (dayIndex < 0 || dayIndex > 9) return;
 
-      group.sums[dayIndex] += video.dailySnapshots[dayKey].viewCount;
+      const viewCount = video.dailySnapshots[dayKey].viewCount;
+      group.sums[dayIndex] += viewCount;
       group.counts[dayIndex]++;
+      debugViews[dayIndex] = viewCount;
     });
+
+    debugRows.push([
+      videoKey,
+      video.videoId,
+      video.type,
+      video.publishedAt,
+      video.publishedMonth,
+      video.publishedWeek,
+      firstSnapshotDate
+    ].concat(debugViews));
   });
 
   const typeOrder = { live: 1, short: 2, video: 3 };
@@ -2593,21 +2695,39 @@ function createWeeklyViewReport() {
     return typeOrder[a[2]] - typeOrder[b[2]];
   });
 
+  debugRows.sort(function(a, b) {
+    const monthA = parseWeeklyReportMonthSortKey_(a[4]);
+    const monthB = parseWeeklyReportMonthSortKey_(b[4]);
+    if (monthA !== monthB) return monthA - monthB;
+    if (a[5] !== b[5]) return a[5] - b[5];
+    const typeDiff = typeOrder[a[2]] - typeOrder[b[2]];
+    if (typeDiff !== 0) return typeDiff;
+    return String(a[1]).localeCompare(String(b[1]));
+  });
+
   const output = [header].concat(rows);
   outputSheet.getRange(1, 1, output.length, header.length).setValues(output);
   outputSheet.getRange(1, 1, 1, header.length).setFontWeight('bold');
   outputSheet.autoResizeColumns(1, header.length);
+
+  const debugOutput = [debugHeader].concat(debugRows);
+  debugSheet.getRange(1, 1, debugOutput.length, debugHeader.length).setValues(debugOutput);
+  debugSheet.getRange(1, 1, 1, debugHeader.length).setFontWeight('bold');
+  debugSheet.autoResizeColumns(1, debugHeader.length);
 
   Logger.log(
     '週間再生数: 入力行数=' + (values.length - 1) +
     ', 有効行数=' + validRowCount +
     ', スキップ行数=' + skippedRowCount +
     ', 不正typeスキップ行数=' + skippedInvalidType +
+    ', 動画ID取得失敗スキップ行数=' + skippedMissingVideoId +
     ', 動画数=' + videoCount +
     ', 出力グループ数=' + rows.length
   );
-  Logger.log('Skipped invalid type rows: ' + skippedInvalidType);
-  Logger.log(JSON.stringify(typeCounts));
+  Logger.log('動画ID取得失敗スキップ行数=' + skippedMissingVideoId);
+  Logger.log('type別行数=' + JSON.stringify(typeCounts));
+  Logger.log('type別ユニーク動画数=' + JSON.stringify(uniqueVideoCountsByType));
+  Logger.log('liveのユニーク動画数=' + uniqueVideoCountsByType.live);
 }
 
 /** record の type 値を集計用の表記に正規化します。 */
