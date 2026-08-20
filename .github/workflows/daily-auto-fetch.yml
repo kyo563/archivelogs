@@ -2,7 +2,7 @@ name: Daily Auto Fetch
 
 on:
   schedule:
-    - cron: '0 22 * * *' # JST 07:00
+    - cron: '17 22 * * *' # JST 07:17 (avoid the busy top of the hour)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -17,6 +17,8 @@ on:
 jobs:
   auto-fetch:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
       SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
@@ -50,3 +52,36 @@ jobs:
           else
             python -m scripts.run_daily_auto_fetch
           fi
+
+  keepalive:
+    name: Keep scheduled workflow active
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record activity after 30 quiet days
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_commit_epoch="$(git log -1 --format=%ct)"
+          current_epoch="$(date +%s)"
+          keepalive_interval_seconds=$((30 * 24 * 60 * 60))
+
+          if (( current_epoch - latest_commit_epoch < keepalive_interval_seconds )); then
+            echo "A repository commit was made within the last 30 days; no keepalive is needed."
+            exit 0
+          fi
+
+          printf 'Last keepalive: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > .github/workflow-keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- .github/workflow-keepalive
+          git commit -m "chore: keep scheduled workflows active"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
