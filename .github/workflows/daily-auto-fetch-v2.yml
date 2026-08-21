@@ -158,8 +158,10 @@ jobs:
               queued|in_progress|waiting|pending|requested)
                 if gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel"; then
                   echo "Cancelled stale legacy run ${run_id}."
+                elif gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"; then
+                  echo "Force-cancelled unresponsive legacy run ${run_id}."
                 else
-                  echo "Could not cancel legacy run ${run_id}; it may have already finished."
+                  echo "Could not cancel legacy run ${run_id}; manual GitHub support may be required."
                 fi
                 ;;
               *)
