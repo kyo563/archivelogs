@@ -138,6 +138,36 @@ jobs:
               --comment "Daily Auto Fetch recovered successfully. Run: ${RUN_URL}"
           fi
 
+  cleanup-legacy:
+    name: Cancel stale legacy Daily runs
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Cancel obsolete queued runs from the retired workflow ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          for run_id in 32076305638 32431526636; do
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.status' 2>/dev/null || true)"
+            case "$status" in
+              queued|in_progress|waiting|pending|requested)
+                if gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel"; then
+                  echo "Cancelled stale legacy run ${run_id}."
+                else
+                  echo "Could not cancel legacy run ${run_id}; it may have already finished."
+                fi
+                ;;
+              *)
+                echo "Legacy run ${run_id} no longer needs cancellation (status=${status:-unknown})."
+                ;;
+            esac
+          done
+
   keepalive:
     name: Keep scheduled workflow active
     if: github.event_name == 'schedule'
