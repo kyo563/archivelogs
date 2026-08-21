@@ -18,7 +18,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      issues: write
     env:
       YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
       SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
@@ -81,11 +80,22 @@ jobs:
         if: steps.completion-cache.outputs.cache-hit == 'true'
         run: echo "Daily Auto Fetch already completed for ${{ steps.run-date.outputs.date }}; skipping duplicate writes."
 
+  report:
+    name: Report Daily Auto Fetch result
+    needs: auto-fetch
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
       - name: Open or update a failure issue
-        if: failure()
+        if: needs.auto-fetch.result != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_RESULT: ${{ needs.auto-fetch.result }}
         shell: bash
         run: |
           issue_number="$(gh issue list \
@@ -94,7 +104,7 @@ jobs:
             --search '"[automation] Daily Auto Fetch failed" in:title' \
             --json number \
             --jq '.[0].number // empty')"
-          body="Daily Auto Fetch failed on $(date -u +'%Y-%m-%dT%H:%M:%SZ'). Run: ${RUN_URL}"
+          body="Daily Auto Fetch ended with ${JOB_RESULT} on $(date -u +'%Y-%m-%dT%H:%M:%SZ'). Run: ${RUN_URL}"
           if [ -n "$issue_number" ]; then
             gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
           else
@@ -105,7 +115,7 @@ jobs:
           fi
 
       - name: Close the failure issue after recovery
-        if: success() && steps.completion-cache.outputs.cache-hit != 'true'
+        if: needs.auto-fetch.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
