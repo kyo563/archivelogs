@@ -6,10 +6,12 @@ from archivelogs.jobs import (
     STATUS_COLS,
     _append_unique_rows,
     _build_status_row,
+    _channel_master_row_key,
     _dedupe_search_targets,
     _record_row_key,
     _select_status_batch,
     _status_row_key,
+    _upsert_rows,
     run_daily_auto_jobs,
     run_search_target_status_batch,
 )
@@ -84,6 +86,15 @@ class _AppendWS:
         self.appended.extend(rows)
 
 
+class _UpsertWS(_AppendWS):
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.updates = []
+
+    def batch_update(self, updates, value_input_option=None):
+        self.updates.extend(updates)
+
+
 def test_append_unique_record_rows_skips_same_video_on_same_day():
     existing = [
         ["logged_at", "type", "title"],
@@ -126,6 +137,25 @@ def test_append_unique_status_rows_skips_same_channel_on_same_day():
     assert appended == 1
     assert skipped == 1
     assert ws.appended == [another_channel]
+
+
+def test_upsert_channel_master_updates_existing_and_appends_new_channel():
+    ws = _UpsertWS(
+        [
+            ["チャンネルID", "チャンネル名", "last_video_count"],
+            ["channel-a", "old", "10"],
+        ]
+    )
+    updated = ["channel-a", "new", "11"]
+    new = ["channel-b", "second", "2"]
+
+    appended, changed, unchanged = _upsert_rows(
+        ws, [updated, new], _channel_master_row_key
+    )
+
+    assert (appended, changed, unchanged) == (1, 1, 0)
+    assert ws.appended == [new]
+    assert ws.updates == [{"range": "A2:C2", "values": [updated]}]
 
 
 def test_run_search_target_status_batch_dedupe_and_exclude(monkeypatch):
