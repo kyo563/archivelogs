@@ -1,6 +1,18 @@
 from datetime import datetime
 
-from archivelogs.jobs import JST, ROUTINE_STATUS_CHANNEL_IDS, STATUS_COLS, _build_status_row, _dedupe_search_targets, _select_status_batch, run_daily_auto_jobs, run_search_target_status_batch
+from archivelogs.jobs import (
+    JST,
+    ROUTINE_STATUS_CHANNEL_IDS,
+    STATUS_COLS,
+    _append_unique_rows,
+    _build_status_row,
+    _dedupe_search_targets,
+    _record_row_key,
+    _select_status_batch,
+    _status_row_key,
+    run_daily_auto_jobs,
+    run_search_target_status_batch,
+)
 
 
 class _Exec:
@@ -58,6 +70,62 @@ def test_unseen_is_highest_priority():
     ]
     out = _select_status_batch(items, datetime(2026, 5, 11).date(), 2)
     assert [x["channel_id"] for x in out] == ["X", "Y"]
+
+
+class _AppendWS:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.appended = []
+
+    def get_all_values(self, value_render_option=None):
+        return self.rows
+
+    def append_rows(self, rows, value_input_option=None):
+        self.appended.extend(rows)
+
+
+def test_append_unique_record_rows_skips_same_video_on_same_day():
+    existing = [
+        ["logged_at", "type", "title"],
+        [
+            "2026/08/21 07:17:00",
+            "video",
+            '=HYPERLINK("https://www.youtube.com/watch?v=abcdefghijk","old")',
+        ],
+    ]
+    duplicate = [
+        "2026/08/21 09:47:00",
+        "video",
+        '=HYPERLINK("https://www.youtube.com/watch?v=abcdefghijk","new")',
+    ]
+    next_day = [
+        "2026/08/22 07:17:00",
+        "video",
+        '=HYPERLINK("https://www.youtube.com/watch?v=abcdefghijk","new")',
+    ]
+    ws = _AppendWS(existing)
+
+    appended, skipped = _append_unique_rows(
+        ws, [duplicate, next_day], _record_row_key
+    )
+
+    assert appended == 1
+    assert skipped == 1
+    assert ws.appended == [next_day]
+
+
+def test_append_unique_status_rows_skips_same_channel_on_same_day():
+    ws = _AppendWS([["取得日時", "チャンネルID"], ["2026/08/21", "channel-a"]])
+    duplicate = ["2026/08/21", "channel-a"]
+    another_channel = ["2026/08/21", "channel-b"]
+
+    appended, skipped = _append_unique_rows(
+        ws, [duplicate, another_channel], _status_row_key
+    )
+
+    assert appended == 1
+    assert skipped == 1
+    assert ws.appended == [another_channel]
 
 
 def test_run_search_target_status_batch_dedupe_and_exclude(monkeypatch):
