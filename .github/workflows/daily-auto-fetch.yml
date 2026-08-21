@@ -28,10 +28,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
@@ -52,7 +52,7 @@ jobs:
 
       - name: Restore today's completion marker
         id: completion-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .daily-auto-fetch-success
           key: daily-auto-fetch-success-${{ steps.run-date.outputs.date }}
@@ -71,7 +71,7 @@ jobs:
 
       - name: Save today's completion marker
         if: steps.completion-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .daily-auto-fetch-success
           key: daily-auto-fetch-success-${{ steps.run-date.outputs.date }}
@@ -141,7 +141,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
