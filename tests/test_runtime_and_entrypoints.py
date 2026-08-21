@@ -256,8 +256,8 @@ def test_daily_auto_fetch_workflow_uses_same_production_path_for_manual_and_sche
     assert "daily-auto-fetch-main" in text
     assert "timeout-minutes: 30" in text
     assert text.count("cron:") == 2
-    assert "actions/cache/restore@v4" in text
-    assert "actions/cache/save@v4" in text
+    assert "actions/cache/restore@v6" in text
+    assert "actions/cache/save@v6" in text
     assert "Open or update a failure issue" in text
 
 
