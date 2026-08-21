@@ -248,7 +248,7 @@ def test_append_record_rows_if_needed_empty_rows_has_no_side_effects(monkeypatch
 
 
 def test_daily_auto_fetch_workflow_uses_same_production_path_for_manual_and_schedule():
-    text = Path(".github/workflows/daily-auto-fetch.yml").read_text(encoding="utf-8")
+    text = Path(".github/workflows/daily-auto-fetch-v2.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in text
     assert "dry_run:" not in text
     assert "--dry-run" not in text
