@@ -4,7 +4,11 @@ import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
-from archivelogs.youtube_client import fallback_fetch_like_count_diagnostic, fetch_videos_bulk
+from archivelogs.youtube_client import (
+    execute_with_retry,
+    fallback_fetch_like_count_diagnostic,
+    fetch_videos_bulk,
+)
 
 LOGGER = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
@@ -19,13 +23,25 @@ def parse_iso8601_duration(duration):
 
 
 def fetch_upload_video_ids(youtube, channel_id, max_results=50):
-    ch = youtube.channels().list(part="contentDetails", id=channel_id, maxResults=1).execute().get("items", [])
+    response = execute_with_retry(
+        lambda: youtube.channels().list(
+            part="contentDetails", id=channel_id, maxResults=1
+        )
+    )
+    ch = response.get("items", [])
     if not ch:
         return []
     up = ch[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
     ids, token = [], None
     while len(ids) < max_results:
-        r = youtube.playlistItems().list(part="contentDetails", playlistId=up, maxResults=min(50, max_results - len(ids)), pageToken=token).execute()
+        r = execute_with_retry(
+            lambda: youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=up,
+                maxResults=min(50, max_results - len(ids)),
+                pageToken=token,
+            )
+        )
         ids += [((it.get("contentDetails") or {}).get("videoId")) for it in r.get("items", []) if (it.get("contentDetails") or {}).get("videoId")]
         token = r.get("nextPageToken")
         if not token:
