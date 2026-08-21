@@ -32,7 +32,10 @@ from archivelogs.config import (
     load_service_account_info,
     set_runtime_config,
 )
-from archivelogs.jobs import run_search_target_status_batch as shared_run_search_target_status_batch
+from archivelogs.jobs import (
+    run_daily_auto_jobs as shared_run_daily_auto_jobs,
+    run_search_target_status_batch as shared_run_search_target_status_batch,
+)
 
 # ====================================
 # 共通設定
@@ -1663,36 +1666,20 @@ def render_streamlit_app():
             routine_btn = st.button("ルーティン")
 
             if routine_btn:
-                ws_record = get_record_worksheet()
-                ws_status = get_status_worksheet()
                 with st.spinner("ルーティンを実行中..."):
-                    record_rows, _ = fetch_record_rows_via_core(
+                    result = shared_run_daily_auto_jobs(
                         api_key=api_key,
-                        channel_id=ROUTINE_RECORD_CHANNEL_ID,
-                        max_results=50,
+                        batch_limit=30,
+                        dry_run=False,
                     )
 
-                    record_count = 0
-                    if record_rows:
-                        shared_append_rows(ws_record, record_rows)
-                        record_count = len(record_rows)
-                        refresh_record_comment_counts(ws_record, api_key)
-
-                    status_rows: List[List] = []
-                    failed_status_ids: List[str] = []
-                    for channel_id in ROUTINE_STATUS_CHANNEL_IDS:
-                        status = compute_channel_status(channel_id, api_key)
-                        if status:
-                            status_rows.append(build_status_row(status))
-                        else:
-                            failed_status_ids.append(channel_id)
-
-                    if status_rows:
-                        append_rows(ws_status, status_rows)
-
                 st.success(
-                    f"ルーティン完了: Record {record_count}件 / Status {len(status_rows)}件を追記しました。"
+                    "ルーティン完了: "
+                    f"Record {result.get('record_rows_appended', 0)}件 / "
+                    f"Routine Status {result.get('routine_status_appended', 0)}件 / "
+                    f"Search Status {result.get('status_batch_appended', 0)}件を追記しました。"
                 )
+                failed_status_ids = (result.get("routine") or {}).get("failed_status_ids", [])
                 if failed_status_ids:
                     st.warning(
                         "Status 取得に失敗したチャンネルID: "

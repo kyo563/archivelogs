@@ -247,13 +247,18 @@ def test_append_record_rows_if_needed_empty_rows_has_no_side_effects(monkeypatch
     assert called == {"ws": 0, "append": 0, "refresh": 0}
 
 
-def test_daily_auto_fetch_workflow_dispatch_has_dry_run_input():
+def test_daily_auto_fetch_workflow_uses_same_production_path_for_manual_and_schedule():
     text = Path(".github/workflows/daily-auto-fetch.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in text
-    assert "inputs:" in text
-    assert "dry_run:" in text
-    assert 'default: "true"' in text
-    assert '--dry-run' in text
+    assert "dry_run:" not in text
+    assert "--dry-run" not in text
+    assert text.count("python -m scripts.run_daily_auto_fetch") == 1
+    assert "daily-auto-fetch-main" in text
+    assert "timeout-minutes: 30" in text
+    assert text.count("cron:") == 2
+    assert "actions/cache/restore@v6" in text
+    assert "actions/cache/save@v6" in text
+    assert "Open or update a failure issue" in text
 
 
 def test_streamlit_uses_shared_jobs_for_batch_and_daily():

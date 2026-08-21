@@ -1,4 +1,6 @@
-from archivelogs.youtube_client import fetch_videos_bulk
+import pytest
+
+from archivelogs.youtube_client import execute_with_retry, fetch_videos_bulk
 
 def test_fetch_videos_bulk_chunking():
     calls=[]
@@ -9,6 +11,43 @@ def test_fetch_videos_bulk_chunking():
         def videos(self): return V()
     fetch_videos_bulk(Y(), [f"id{i:09d}"[:11] for i in range(120)])
     assert len(calls)==3
+
+
+def test_execute_with_retry_recovers_from_transient_http_error(monkeypatch):
+    calls = {"count": 0}
+
+    class TransientError(Exception):
+        resp = type("Response", (), {"status": 503})()
+
+    class Request:
+        def execute(self):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise TransientError()
+            return {"ok": True}
+
+    monkeypatch.setattr("archivelogs.youtube_client.time.sleep", lambda *_: None)
+
+    assert execute_with_retry(lambda: Request()) == {"ok": True}
+    assert calls["count"] == 3
+
+
+def test_execute_with_retry_does_not_retry_non_transient_http_error(monkeypatch):
+    calls = {"count": 0}
+
+    class QuotaError(Exception):
+        resp = type("Response", (), {"status": 403})()
+
+    class Request:
+        def execute(self):
+            calls["count"] += 1
+            raise QuotaError()
+
+    monkeypatch.setattr("archivelogs.youtube_client.time.sleep", lambda *_: None)
+
+    with pytest.raises(QuotaError):
+        execute_with_retry(lambda: Request())
+    assert calls["count"] == 1
 
 
 from archivelogs.youtube_client import fallback_fetch_like_count_diagnostic
