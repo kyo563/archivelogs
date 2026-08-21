@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Sequence
 
 from archivelogs.record_fetcher import (
     build_rows_from_video_items_with_like_fallback,
+    extract_video_id_from_title_cell,
     fetch_upload_video_ids,
     filter_recordable_video_items,
 )
@@ -16,7 +17,11 @@ from archivelogs.sheets import (
     get_search_target_worksheet,
     get_status_worksheet,
 )
-from archivelogs.youtube_client import fetch_videos_bulk, get_youtube_client
+from archivelogs.youtube_client import (
+    execute_with_retry,
+    fetch_videos_bulk,
+    get_youtube_client,
+)
 
 LOGGER = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
@@ -55,8 +60,14 @@ def _fetch_channel_playlists(youtube, channel_id: str, limit: int = 50) -> List[
     items: List[dict] = []
     page_token = None
     while len(items) < limit:
-        req = youtube.playlists().list(part="snippet,contentDetails", channelId=channel_id, maxResults=min(50, limit - len(items)), pageToken=page_token)
-        resp = req.execute() or {}
+        resp = execute_with_retry(
+            lambda: youtube.playlists().list(
+                part="snippet,contentDetails",
+                channelId=channel_id,
+                maxResults=min(50, limit - len(items)),
+                pageToken=page_token,
+            )
+        ) or {}
         chunk = resp.get("items", [])
         items.extend(chunk)
         page_token = resp.get("nextPageToken")
@@ -115,6 +126,65 @@ def _parse_date(v: str) -> Optional[date]:
     return None
 
 
+def _date_key(value) -> Optional[str]:
+    parsed = _parse_date(str(value or ""))
+    return parsed.isoformat() if parsed else None
+
+
+def _record_row_key(row):
+    if len(row) < 3:
+        return None
+    run_date = _date_key(row[0])
+    identifier = extract_video_id_from_title_cell(str(row[2] or "")) or str(row[2] or "").strip()
+    return (run_date, identifier) if run_date and identifier else None
+
+
+def _status_row_key(row):
+    if len(row) < 2:
+        return None
+    run_date = _date_key(row[0])
+    channel_id = str(row[1] or "").strip()
+    return (run_date, channel_id) if run_date and channel_id else None
+
+
+def _exact_row_key(row):
+    return tuple(str(value) for value in row) if row else None
+
+
+def _read_rows_for_dedupe(ws):
+    if not ws or not hasattr(ws, "get_all_values"):
+        return []
+    try:
+        return ws.get_all_values(value_render_option="FORMULA")
+    except TypeError:
+        return ws.get_all_values()
+
+
+def _append_unique_rows(ws, rows, key_builder):
+    """Append rows once for a deterministic key and return (appended, skipped)."""
+    if not rows or not ws:
+        return 0, 0
+
+    existing_keys = {
+        key
+        for row in _read_rows_for_dedupe(ws)
+        if (key := key_builder(row)) is not None
+    }
+    pending = []
+    skipped = 0
+    for row in rows:
+        key = key_builder(row)
+        if key is not None and key in existing_keys:
+            skipped += 1
+            continue
+        pending.append(row)
+        if key is not None:
+            existing_keys.add(key)
+
+    append_rows(ws, pending)
+    return len(pending), skipped
+
+
 def _dedupe_search_targets(targets, exclude_ids: Sequence[str]):
     seen, out = set(), []
     excluded = duplicated = 0
@@ -138,7 +208,13 @@ def _fetch_channels_light_bulk(youtube, channel_ids: Sequence[str]):
     out = {}
     for i in range(0, len(channel_ids), 50):
         chunk = channel_ids[i : i + 50]
-        resp = youtube.channels().list(part="snippet,statistics,contentDetails", id=",".join(chunk), maxResults=50).execute() or {}
+        resp = execute_with_retry(
+            lambda: youtube.channels().list(
+                part="snippet,statistics,contentDetails",
+                id=",".join(chunk),
+                maxResults=50,
+            )
+        ) or {}
         for it in resp.get("items", []):
             cid = it.get("id")
             if cid:
@@ -149,7 +225,11 @@ def _fetch_channels_light_bulk(youtube, channel_ids: Sequence[str]):
 def _fetch_latest_upload_published_at(youtube, uploads_playlist_id: str) -> str:
     if not uploads_playlist_id:
         return ""
-    resp = youtube.playlistItems().list(part="snippet", playlistId=uploads_playlist_id, maxResults=1).execute() or {}
+    resp = execute_with_retry(
+        lambda: youtube.playlistItems().list(
+            part="snippet", playlistId=uploads_playlist_id, maxResults=1
+        )
+    ) or {}
     items = resp.get("items", [])
     if not items:
         return ""
@@ -158,7 +238,12 @@ def _fetch_latest_upload_published_at(youtube, uploads_playlist_id: str) -> str:
 
 def _build_status_row(youtube, channel_id):
     now_jst = datetime.now(JST)
-    r = youtube.channels().list(part="snippet,statistics,contentDetails", id=channel_id, maxResults=1).execute().get("items", [])
+    response = execute_with_retry(
+        lambda: youtube.channels().list(
+            part="snippet,statistics,contentDetails", id=channel_id, maxResults=1
+        )
+    )
+    r = response.get("items", [])
     if not r:
         return None
     it = r[0]
@@ -199,15 +284,17 @@ def run_record_update(api_key: str, dry_run: bool = False) -> Dict:
     by_id = fetch_videos_bulk(yt, ids)
     items = filter_recordable_video_items([by_id[v] for v in ids if v in by_id], max_results=50)
     record_rows, diag = build_rows_from_video_items_with_like_fallback(yt, items, datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S"))
-    record_appended = 0
+    record_appended = record_skipped = 0
     if record_rows and not dry_run:
-        append_rows(ws_record, record_rows)
-        record_appended = len(record_rows)
+        record_appended, record_skipped = _append_unique_rows(
+            ws_record, record_rows, _record_row_key
+        )
 
     return {
         "record_target_count": len(items),
         "record_rows_planned": len(record_rows),
         "record_rows_appended": record_appended,
+        "record_rows_skipped_duplicate": record_skipped,
         "diag": diag,
     }
 
@@ -223,14 +310,16 @@ def run_routine_status_update(api_key: str, dry_run: bool = False) -> Dict:
             routine_status.append(row)
         else:
             failed.append(cid)
-    routine_status_appended = 0
+    routine_status_appended = routine_status_skipped = 0
     if routine_status and not dry_run:
-        append_rows(ws_status, routine_status)
-        routine_status_appended = len(routine_status)
+        routine_status_appended, routine_status_skipped = _append_unique_rows(
+            ws_status, routine_status, _status_row_key
+        )
 
     return {
         "routine_status_planned": len(routine_status),
         "routine_status_appended": routine_status_appended,
+        "routine_status_skipped_duplicate": routine_status_skipped,
         "routine": {"status_count": len(routine_status), "failed_status_ids": failed},
     }
 
@@ -321,11 +410,13 @@ def run_search_target_status_batch(api_key: str, batch_limit: int = 30, dry_run:
         else:
             ng.append(cid)
 
-    status_batch_appended = 0
+    status_batch_appended = status_batch_skipped = 0
     if batch and not dry_run:
-        append_rows(ws_status, batch)
-        status_batch_appended = len(batch)
+        status_batch_appended, status_batch_skipped = _append_unique_rows(
+            ws_status, batch, _status_row_key
+        )
 
+    channel_master_appended = channel_master_skipped = 0
     if not dry_run and ws_master:
         new_rows = []
         for u in master_updates:
@@ -338,12 +429,17 @@ def run_search_target_status_batch(api_key: str, batch_limit: int = 30, dry_run:
                 if k in header_idx:
                     row[header_idx[k]] = str(v) if v is not None else ""
             new_rows.append(row)
-        append_rows(ws_master, new_rows)
+        channel_master_appended, channel_master_skipped = _append_unique_rows(
+            ws_master, new_rows, _exact_row_key
+        )
 
     return {
         "status_batch_picked": len(picked),
         "status_batch_planned": len(batch),
         "status_batch_appended": status_batch_appended,
+        "status_batch_skipped_duplicate": status_batch_skipped,
+        "channel_master_rows_appended": channel_master_appended,
+        "channel_master_rows_skipped_duplicate": channel_master_skipped,
         "status_batch": {"picked_count": len(picked), "ok_items": ok, "ng_items": ng, "filled_count": 0},
         "status_batch_source_count": len(targets),
         "status_batch_excluded_routine_count": excluded_count,
