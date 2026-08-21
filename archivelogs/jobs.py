@@ -3,6 +3,8 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence
 
+from gspread.utils import rowcol_to_a1
+
 from archivelogs.record_fetcher import (
     build_rows_from_video_items_with_like_fallback,
     extract_video_id_from_title_cell,
@@ -147,8 +149,15 @@ def _status_row_key(row):
     return (run_date, channel_id) if run_date and channel_id else None
 
 
-def _exact_row_key(row):
-    return tuple(str(value) for value in row) if row else None
+def _channel_master_row_key(row):
+    return str(row[0] or "").strip() if row else None
+
+
+def _normalized_row(row):
+    values = [str(value) for value in row]
+    while values and not values[-1]:
+        values.pop()
+    return tuple(values)
 
 
 def _read_rows_for_dedupe(ws):
@@ -183,6 +192,70 @@ def _append_unique_rows(ws, rows, key_builder):
 
     append_rows(ws, pending)
     return len(pending), skipped
+
+
+def _upsert_rows(ws, rows, key_builder):
+    """Update existing keyed rows and append new ones.
+
+    Returns ``(appended, updated, unchanged)``. Updates are batched to keep the
+    Google Sheets request count bounded when ChannelMaster contains many rows.
+    """
+    if not rows or not ws:
+        return 0, 0, 0
+
+    existing_by_key = {}
+    for row_index, row in enumerate(_read_rows_for_dedupe(ws), start=1):
+        key = key_builder(row)
+        if key is not None:
+            existing_by_key[key] = (row_index, row)
+
+    updates_by_row = {}
+    pending = []
+    pending_by_key = {}
+    unchanged = 0
+    for row in rows:
+        key = key_builder(row)
+        existing = existing_by_key.get(key) if key is not None else None
+        if existing:
+            row_index, old_row = existing
+            if _normalized_row(old_row) == _normalized_row(row):
+                unchanged += 1
+            else:
+                updates_by_row[row_index] = row
+            continue
+        if key is not None and key in pending_by_key:
+            pending[pending_by_key[key]] = row
+            continue
+        if key is not None:
+            pending_by_key[key] = len(pending)
+        pending.append(row)
+
+    if updates_by_row:
+        updates = [
+            {
+                "range": f"A{row_index}:{rowcol_to_a1(row_index, len(row))}",
+                "values": [row],
+            }
+            for row_index, row in sorted(updates_by_row.items())
+        ]
+        if hasattr(ws, "batch_update"):
+            try:
+                ws.batch_update(updates, value_input_option="USER_ENTERED")
+            except TypeError:
+                ws.batch_update(updates)
+        else:
+            for update in updates:
+                try:
+                    ws.update(
+                        update["range"],
+                        update["values"],
+                        value_input_option="USER_ENTERED",
+                    )
+                except TypeError:
+                    ws.update(update["range"], update["values"])
+
+    append_rows(ws, pending)
+    return len(pending), len(updates_by_row), unchanged
 
 
 def _dedupe_search_targets(targets, exclude_ids: Sequence[str]):
@@ -416,7 +489,7 @@ def run_search_target_status_batch(api_key: str, batch_limit: int = 30, dry_run:
             ws_status, batch, _status_row_key
         )
 
-    channel_master_appended = channel_master_skipped = 0
+    channel_master_appended = channel_master_updated = channel_master_unchanged = 0
     if not dry_run and ws_master:
         new_rows = []
         for u in master_updates:
@@ -429,8 +502,8 @@ def run_search_target_status_batch(api_key: str, batch_limit: int = 30, dry_run:
                 if k in header_idx:
                     row[header_idx[k]] = str(v) if v is not None else ""
             new_rows.append(row)
-        channel_master_appended, channel_master_skipped = _append_unique_rows(
-            ws_master, new_rows, _exact_row_key
+        channel_master_appended, channel_master_updated, channel_master_unchanged = _upsert_rows(
+            ws_master, new_rows, _channel_master_row_key
         )
 
     return {
@@ -439,7 +512,8 @@ def run_search_target_status_batch(api_key: str, batch_limit: int = 30, dry_run:
         "status_batch_appended": status_batch_appended,
         "status_batch_skipped_duplicate": status_batch_skipped,
         "channel_master_rows_appended": channel_master_appended,
-        "channel_master_rows_skipped_duplicate": channel_master_skipped,
+        "channel_master_rows_updated": channel_master_updated,
+        "channel_master_rows_unchanged": channel_master_unchanged,
         "status_batch": {"picked_count": len(picked), "ok_items": ok, "ng_items": ng, "filled_count": 0},
         "status_batch_source_count": len(targets),
         "status_batch_excluded_routine_count": excluded_count,
