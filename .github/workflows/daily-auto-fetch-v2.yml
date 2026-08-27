@@ -6,6 +6,7 @@ on:
   schedule:
     - cron: '17 22 * * *' # Primary: JST 07:17
     - cron: '47 0 * * *'  # Recovery: JST 09:47; skips after a successful primary run
+    - cron: '17 3 * * *'  # Noon fallback: JST 12:17; skips after any successful run
   workflow_dispatch:
   push:
     branches:
