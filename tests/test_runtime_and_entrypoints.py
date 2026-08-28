@@ -255,10 +255,21 @@ def test_daily_auto_fetch_workflow_uses_same_production_path_for_manual_and_sche
     assert text.count("python -m scripts.run_daily_auto_fetch") == 1
     assert "daily-auto-fetch-main" in text
     assert "timeout-minutes: 30" in text
-    assert text.count("cron:") == 3
-    assert "cron: '17 3 * * *'" in text
+    assert text.count("cron:") == 5
+    for cron in (
+        "17 22 * * *",
+        "37 22 * * *",
+        "57 22 * * *",
+        "17 23 * * *",
+        "17 3 * * *",
+    ):
+        assert f"cron: '{cron}'" in text
     assert "actions/cache/restore@v6" in text
     assert "actions/cache/save@v6" in text
+    assert "key: daily-auto-fetch-success-${{ steps.run-date.outputs.date }}" in text
+    assert text.index("Restore today's completion marker") < text.index("Set up Python")
+    assert text.count("if: steps.completion-cache.outputs.cache-hit != 'true'") == 7
+    assert "if: steps.completion-cache.outputs.cache-hit == 'true'" in text
     assert "Open or update a failure issue" in text
 
 
