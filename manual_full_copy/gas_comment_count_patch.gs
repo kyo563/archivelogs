@@ -1087,21 +1087,25 @@ function buildWeeklyChannelOverview() {
 
         const memo = buildWeeklyOverviewMemo_(metrics);
 
+        // 表示時のみ補完し、計算・分類ではデータ不足と実測ゼロを区別する。
+        const zeroIfUnavailable = function(value) {
+          return value === '' || value == null ? 0 : value;
+        };
         const outRow = [
           Utilities.formatDate(latestDate, tz, 'yyyy/MM/dd'),
           latestRow[statusHeaderMap['チャンネル名']] != null ? String(latestRow[statusHeaderMap['チャンネル名']]) : '',
           latestSubs != null ? latestSubs : '',
-          compareDays !== '' && compareDays != null ? compareDays : '',
-          subsDiff,
-          viewsDiff,
-          viewsPerDay,
-          uploadsDiff,
+          zeroIfUnavailable(compareDays),
+          zeroIfUnavailable(subsDiff),
+          zeroIfUnavailable(viewsDiff),
+          zeroIfUnavailable(viewsPerDay),
+          zeroIfUnavailable(uploadsDiff),
           estimatedRemovedCount,
-          uploadsPerDay,
-          subsGrowthRate,
-          viewsGrowthRate,
-          recentUploadsPerMonth,
-          postingAcceleration,
+          zeroIfUnavailable(uploadsPerDay),
+          zeroIfUnavailable(subsGrowthRate),
+          zeroIfUnavailable(viewsGrowthRate),
+          zeroIfUnavailable(recentUploadsPerMonth),
+          zeroIfUnavailable(postingAcceleration),
           topVideoTitle,
           topVideoType,
           topVideoViews,
