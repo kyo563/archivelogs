@@ -958,7 +958,7 @@ function buildWeeklyChannelOverview() {
 
         const hasBase = !!baseItem;
         if (!hasBase) dataShortageCount++;
-        const compareDays = hasBase ? calcCalendarDayDiff_(baseItem.date, latestDate, tz) : '';
+        const compareDays = hasBase ? calcCalendarDayDiff_(baseItem.date, latestDate, tz) : 0;
 
         const latestSubs = toNumberForOverview_(latestRow[statusHeaderMap['登録者数']]);
         const latestUploads = toNumberForOverview_(latestRow[statusHeaderMap['動画本数']]);
@@ -970,15 +970,19 @@ function buildWeeklyChannelOverview() {
         const baseUploads = hasBase ? toNumberForOverview_(baseRow[statusHeaderMap['動画本数']]) : null;
         const baseViews = hasBase ? toNumberForOverview_(baseRow[statusHeaderMap['総再生回数']]) : null;
 
-        const subsDiff = safeDiffForOverview_(latestSubs, baseSubs);
-        const viewsDiff = safeDiffForOverview_(latestViews, baseViews);
-        const uploadsDiff = safeDiffForOverview_(latestUploads, baseUploads);
+        const subsDiff = hasBase ? safeDiffForOverview_(latestSubs, baseSubs) : 0;
+        const viewsDiff = hasBase ? safeDiffForOverview_(latestViews, baseViews) : 0;
+        const uploadsDiff = hasBase ? safeDiffForOverview_(latestUploads, baseUploads) : 0;
         const estimatedRemovedCount = (uploadsDiff !== '' && uploadsDiff != null && uploadsDiff < 0) ? Math.abs(uploadsDiff) : '';
 
-        const viewsPerDay = (compareDays !== '' && compareDays > 0 && viewsDiff !== '' && viewsDiff != null)
+        const viewsPerDay = !hasBase
+          ? 0
+          : (compareDays !== '' && compareDays > 0 && viewsDiff !== '' && viewsDiff != null)
           ? (viewsDiff / compareDays)
           : '';
-        const uploadsPerDay = (compareDays !== '' && compareDays > 0 && uploadsDiff !== '' && uploadsDiff != null)
+        const uploadsPerDay = !hasBase
+          ? 0
+          : (compareDays !== '' && compareDays > 0 && uploadsDiff !== '' && uploadsDiff != null)
           ? (uploadsDiff / compareDays)
           : '';
         const recentUploadsPerMonth = (uploadsPerDay !== '' && uploadsPerDay != null)
@@ -987,9 +991,9 @@ function buildWeeklyChannelOverview() {
         const cumulativeUploadsPerMonth = (latestActiveMonths != null && latestActiveMonths > 0 && latestUploads != null)
           ? (latestUploads / latestActiveMonths)
           : '';
-        const postingAcceleration = safeRateForOverview_(recentUploadsPerMonth, cumulativeUploadsPerMonth);
-        const subsGrowthRate = safeRateForOverview_(subsDiff, latestSubs);
-        const viewsGrowthRate = safeRateForOverview_(viewsDiff, latestViews);
+        const postingAcceleration = hasBase ? safeRateForOverview_(recentUploadsPerMonth, cumulativeUploadsPerMonth) : 0;
+        const subsGrowthRate = hasBase ? safeRateForOverview_(subsDiff, latestSubs) : 0;
+        const viewsGrowthRate = hasBase ? safeRateForOverview_(viewsDiff, latestViews) : 0;
         const latestSubsPerVideo = (latestSubs != null && latestUploads != null && latestUploads > 0) ? (latestSubs / latestUploads) : null;
         const baseSubsPerVideo = (baseSubs != null && baseUploads != null && baseUploads > 0) ? (baseSubs / baseUploads) : null;
         const subsPerVideoEfficiencyDiff = (latestSubsPerVideo != null && baseSubsPerVideo != null) ? (latestSubsPerVideo - baseSubsPerVideo) : null;
