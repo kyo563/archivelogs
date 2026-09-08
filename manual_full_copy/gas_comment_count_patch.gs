@@ -7,6 +7,9 @@
  */
 const CHANNEL_NAME_AUTOFILL_TARGET_SHEET = '検索対象';
 
+// 実行ごとの状態。一括処理中だけ通知をトーストに切り替えます。
+let logAnalyticsBatchRunning_ = false;
+
 /**
  * スプレッドシートを開いたときにメニューを追加します。
  */
@@ -29,27 +32,54 @@ function onOpen() {
 
 /**
  * ログの整理から各分析の更新までを依存順に実行します。
- * 各処理の完了ダイアログで「OK」を押すと、次の処理へ進みます。
+ * 一括実行中はトーストだけを表示し、確認操作なしで次へ進みます。
  * 選択行が必要な動画履歴の作成は一括実行に含めません。
  */
 function runAllLogAnalytics() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // 入力不足で一部だけ更新されることを避けるため、先に確認します。
-  ['record', 'Status'].forEach(function(name) {
-    const sheet = ss.getSheetByName(name);
-    if (!sheet || sheet.getLastRow() < 2) {
-      throw new Error(name + ' シートにデータが必要です。');
-    }
-  });
+  const previousBatchRunning = logAnalyticsBatchRunning_;
+  logAnalyticsBatchRunning_ = true;
+  let stage = '入力確認';
+  try {
+    // 入力不足で一部だけ更新されることを避けるため、先に確認します。
+    ['record', 'Status'].forEach(function(name) {
+      const sheet = ss.getSheetByName(name);
+      if (!sheet || sheet.getLastRow() < 2) {
+        throw new Error(name + ' シートにデータが必要です。');
+      }
+    });
 
-  // 各処理が個別にロックを取得するため、ここでは二重に取得しません。
-  dedupeStatusSheet();
-  compressRecordAndUpdateSummary();
-  buildMonthlySummaryFromStatus();
-  buildTypeAnalyticsFromSummary();
-  buildGrowthProfileFromSummary();
-  buildWeeklyChannelOverview();
-  createWeeklyViewReport();
+    // 各処理が個別にロックを取得するため、ここでは二重に取得しません。
+    const steps = [
+      ['Status 重複削除', dedupeStatusSheet],
+      ['record 圧縮・summary 更新', compressRecordAndUpdateSummary],
+      ['月次サマリ更新', buildMonthlySummaryFromStatus],
+      ['type 別集計更新', buildTypeAnalyticsFromSummary],
+      ['成長プロファイル更新', buildGrowthProfileFromSummary],
+      ['週間チャンネル概況更新', buildWeeklyChannelOverview],
+      ['週間再生数更新', createWeeklyViewReport]
+    ];
+    for (let i = 0; i < steps.length; i++) {
+      stage = steps[i][0];
+      safeToast_(ss, (i + 1) + '/' + steps.length + '：' + stage, 'ログ分析 一括実行', 5);
+      steps[i][1]();
+    }
+    safeToast_(ss, 'すべての処理が終了しました。', 'ログ分析 一括実行', 10);
+  } catch (err) {
+    safeToast_(ss, stage + 'で中止しました：' + (err && err.message ? err.message : String(err)), 'ログ分析 エラー', 10);
+    throw err;
+  } finally {
+    logAnalyticsBatchRunning_ = previousBatchRunning;
+  }
+}
+
+/** 一括実行は非同期通知、個別実行は従来の確認ダイアログを使います。 */
+function notifyLogAnalytics_(message) {
+  if (logAnalyticsBatchRunning_) {
+    safeToast_(SpreadsheetApp.getActiveSpreadsheet(), message, 'ログ分析 一括実行', 5);
+    return;
+  }
+  SpreadsheetApp.getUi().alert(message);
 }
 
 /**
@@ -59,7 +89,10 @@ function runWithDocLock_(fn, waitMs, alwaysRefilterSheetNames) {
   const lock = LockService.getDocumentLock();
   const ms = (waitMs != null) ? waitMs : 30000;
   if (!lock.tryLock(ms)) {
-    SpreadsheetApp.getUi().alert('他の処理が実行中のため中止しました。少し待ってから再実行してください。');
+    if (logAnalyticsBatchRunning_) {
+      throw new Error('他の処理が実行中のため中止しました。少し待ってから再実行してください。');
+    }
+    notifyLogAnalytics_('他の処理が実行中のため中止しました。少し待ってから再実行してください。');
     return;
   }
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -850,7 +883,6 @@ function buildWeeklyOverviewMemo_(metrics) {
 function buildWeeklyChannelOverview() {
   return runWithDocLock_(function() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const ui = SpreadsheetApp.getUi();
     const tz = ss.getSpreadsheetTimeZone() || 'Asia/Tokyo';
 
     try {
@@ -1201,7 +1233,7 @@ function buildWeeklyChannelOverview() {
 
       setBordersForUsedRange_(outSheet);
 
-      ui.alert(
+      notifyLogAnalytics_(
         '週間チャンネル概況を更新しました。\n' +
         '出力チャンネル数: ' + outputRows.length + '\n' +
         'データ不足件数: ' + dataShortageCount + '\n' +
@@ -1212,7 +1244,7 @@ function buildWeeklyChannelOverview() {
       );
     } catch (err) {
       appendErrorLog_(ss, 'buildWeeklyChannelOverview', 'main', err, {});
-      ui.alert('週間チャンネル概況更新でエラー: ' + (err && err.message ? err.message : err));
+      notifyLogAnalytics_('週間チャンネル概況更新でエラー: ' + (err && err.message ? err.message : err));
       throw err;
     }
   }, 30000, ['週間チャンネル概況']);
@@ -1458,14 +1490,14 @@ function compressRecordAndUpdateSummary() {
 
       const recordSheet = ss.getSheetByName('record');
       if (!recordSheet) {
-        SpreadsheetApp.getUi().alert('record シートが見つかりません。');
+        notifyLogAnalytics_('record シートが見つかりません。');
         return;
       }
 
       const lastRow = recordSheet.getLastRow();
       const lastCol = recordSheet.getLastColumn();
       if (lastRow < 2) {
-        SpreadsheetApp.getUi().alert('record シートにデータがありません（ヘッダーのみ）です。');
+        notifyLogAnalytics_('record シートにデータがありません（ヘッダーのみ）です。');
         return;
       }
 
@@ -1656,7 +1688,7 @@ function compressRecordAndUpdateSummary() {
       setBordersForUsedRange_(summarySheet);
       safeToast_(ss, '完了しました。', 'ログツール', 3);
 
-      SpreadsheetApp.getUi().alert(
+      notifyLogAnalytics_(
         'record の圧縮と summary の更新が完了しました。\n' +
         'record の行数（ヘッダー除く）: ' + compressedAllRows.length + '\n' +
         'summary の動画数: ' + summaryRows.length + '\n' +
@@ -1667,7 +1699,7 @@ function compressRecordAndUpdateSummary() {
         spreadsheetId: ss.getId(),
         activeSheet: ss.getActiveSheet() ? ss.getActiveSheet().getName() : ''
       });
-      SpreadsheetApp.getUi().alert(
+      notifyLogAnalytics_(
         'record 圧縮＋summary 更新でエラーが発生しました。error_log シートを確認してください。\n' +
         (err && err.message ? err.message : String(err))
       );
@@ -1687,20 +1719,20 @@ function createHistoryForSelectedVideo() {
     const sheetName = sheet.getName();
 
     if (sheetName !== 'summary') {
-      SpreadsheetApp.getUi().alert('summary シートで動画の行（2行目以降）を選択して実行してください。');
+      notifyLogAnalytics_('summary シートで動画の行（2行目以降）を選択して実行してください。');
       return;
     }
 
     const cell = sheet.getActiveCell();
     const row = cell.getRow();
     if (row < 2) {
-      SpreadsheetApp.getUi().alert('ヘッダー以外の行（動画の行）を選択してください。');
+      notifyLogAnalytics_('ヘッダー以外の行（動画の行）を選択してください。');
       return;
     }
 
     const videoId = sheet.getRange(row, 1).getValue();
     if (!videoId) {
-      SpreadsheetApp.getUi().alert('video_id を取得できませんでした。');
+      notifyLogAnalytics_('video_id を取得できませんでした。');
       return;
     }
 
@@ -1709,14 +1741,14 @@ function createHistoryForSelectedVideo() {
 
     const recordSheet = ss.getSheetByName('record');
     if (!recordSheet) {
-      SpreadsheetApp.getUi().alert('record シートが見つかりません。');
+      notifyLogAnalytics_('record シートが見つかりません。');
       return;
     }
 
     const lastRow = recordSheet.getLastRow();
     const lastCol = recordSheet.getLastColumn();
     if (lastRow < 2) {
-      SpreadsheetApp.getUi().alert('record シートにデータがありません（ヘッダーのみ）です。');
+      notifyLogAnalytics_('record シートにデータがありません（ヘッダーのみ）です。');
       return;
     }
 
@@ -1748,7 +1780,7 @@ function createHistoryForSelectedVideo() {
     }
 
     if (logs.length === 0) {
-      SpreadsheetApp.getUi().alert('指定された動画のログが record シートに見つかりませんでした。');
+      notifyLogAnalytics_('指定された動画のログが record シートに見つかりませんでした。');
       return;
     }
 
@@ -1808,7 +1840,7 @@ function createHistoryForSelectedVideo() {
 
     setBordersForUsedRange_(historySheet);
 
-    SpreadsheetApp.getUi().alert(
+    notifyLogAnalytics_(
       'history シートに履歴テーブルを作成しました。\n' +
       'ログ件数: ' + rows.length
     );
@@ -1823,14 +1855,14 @@ function dedupeStatusSheet() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName('Status');
     if (!sheet) {
-      SpreadsheetApp.getUi().alert('Status シートが見つかりません。');
+      notifyLogAnalytics_('Status シートが見つかりません。');
       return;
     }
 
     const lastRow = sheet.getLastRow();
     const lastCol = sheet.getLastColumn();
     if (lastRow < 2) {
-      SpreadsheetApp.getUi().alert('Status シートにデータがありません（ヘッダーのみ）です。');
+      notifyLogAnalytics_('Status シートにデータがありません（ヘッダーのみ）です。');
       return;
     }
 
@@ -1949,7 +1981,7 @@ function dedupeStatusSheet() {
     lines.push('  ・I〜M列に0を含む行は削除');
     lines.push('補足:');
     lines.push('  ・速度優先のため deleteRow は使わず、一括書き戻しに変更しています。');
-    SpreadsheetApp.getUi().alert(lines.join('\n'));
+    notifyLogAnalytics_(lines.join('\n'));
   }, null, ['Status', 'ChannelMaster']);
 }
 
@@ -2041,14 +2073,14 @@ function buildMonthlySummaryFromStatus() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const statusSheet = ss.getSheetByName('Status');
     if (!statusSheet) {
-      SpreadsheetApp.getUi().alert('Status シートが見つかりません。');
+      notifyLogAnalytics_('Status シートが見つかりません。');
       return;
     }
 
     const lastRow = statusSheet.getLastRow();
     const lastCol = statusSheet.getLastColumn();
     if (lastRow < 2) {
-      SpreadsheetApp.getUi().alert('Status シートにデータがありません（ヘッダーのみ）です。');
+      notifyLogAnalytics_('Status シートにデータがありません（ヘッダーのみ）です。');
       return;
     }
 
@@ -2096,7 +2128,7 @@ function buildMonthlySummaryFromStatus() {
 
     const groups = Object.keys(groupMap).map(function(k) { return groupMap[k]; });
     if (groups.length === 0) {
-      SpreadsheetApp.getUi().alert('月次サマリを作成できるデータがありません。');
+      notifyLogAnalytics_('月次サマリを作成できるデータがありません。');
       return;
     }
 
@@ -2201,7 +2233,7 @@ function buildMonthlySummaryFromStatus() {
         '  ・補完件数: ' + fillResult.updated;
     }
 
-    SpreadsheetApp.getUi().alert(
+    notifyLogAnalytics_(
       '月次サマリ（Status → 月ごと）が更新されました。\n' +
       '出力行数: ' + outRows.length + '\n' +
       '初回月として非表示にした行数: ' + skippedBlankDelta + '\n' +
@@ -2219,14 +2251,14 @@ function buildTypeAnalyticsFromSummary() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const summarySheet = ss.getSheetByName('summary');
     if (!summarySheet) {
-      SpreadsheetApp.getUi().alert('summary シートが見つかりません。先に「record 圧縮＋summary 更新」を実行してください。');
+      notifyLogAnalytics_('summary シートが見つかりません。先に「record 圧縮＋summary 更新」を実行してください。');
       return;
     }
 
     const lastRow = summarySheet.getLastRow();
     const lastCol = summarySheet.getLastColumn();
     if (lastRow < 2) {
-      SpreadsheetApp.getUi().alert('summary シートにデータがありません（ヘッダーのみ）です。');
+      notifyLogAnalytics_('summary シートにデータがありません（ヘッダーのみ）です。');
       return;
     }
 
@@ -2301,7 +2333,7 @@ function buildTypeAnalyticsFromSummary() {
 
     setBordersForUsedRange_(typeSheet);
 
-    SpreadsheetApp.getUi().alert(
+    notifyLogAnalytics_(
       'type別集計（summary → type別）が更新されました。\n' +
       '行数: ' + outRows.length
     );
@@ -2316,14 +2348,14 @@ function buildGrowthProfileFromSummary() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const summarySheet = ss.getSheetByName('summary');
     if (!summarySheet) {
-      SpreadsheetApp.getUi().alert('summary シートが見つかりません。先に「record 圧縮＋summary 更新」を実行してください。');
+      notifyLogAnalytics_('summary シートが見つかりません。先に「record 圧縮＋summary 更新」を実行してください。');
       return;
     }
 
     const lastRow = summarySheet.getLastRow();
     const lastCol = summarySheet.getLastColumn();
     if (lastRow < 2) {
-      SpreadsheetApp.getUi().alert('summary シートにデータがありません（ヘッダーのみ）です。');
+      notifyLogAnalytics_('summary シートにデータがありません（ヘッダーのみ）です。');
       return;
     }
 
@@ -2499,7 +2531,7 @@ function buildGrowthProfileFromSummary() {
 
     setBordersForUsedRange_(gpSheet);
 
-    SpreadsheetApp.getUi().alert(
+    notifyLogAnalytics_(
       '成長プロファイル（summary → note 解析）が更新されました。\n' +
       '動画数: ' + growthRows.length
     );
