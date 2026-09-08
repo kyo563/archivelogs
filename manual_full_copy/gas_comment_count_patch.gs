@@ -13,6 +13,8 @@ const CHANNEL_NAME_AUTOFILL_TARGET_SHEET = '検索対象';
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('ログツール')
+    .addItem('ログ分析を一括実行', 'runAllLogAnalytics')
+    .addSeparator()
     .addItem('record 圧縮', 'compressRecordAndUpdateSummary')
     .addItem('選択動画の履歴テーブル作成', 'createHistoryForSelectedVideo')
     .addItem('Status 重複削除', 'dedupeStatusSheet')
@@ -23,6 +25,31 @@ function onOpen() {
     .addItem('週間チャンネル概況更新', 'buildWeeklyChannelOverview')
     .addItem('週間再生数更新', 'createWeeklyViewReport')
     .addToUi();
+}
+
+/**
+ * ログの整理から各分析の更新までを依存順に実行します。
+ * 各処理の完了ダイアログで「OK」を押すと、次の処理へ進みます。
+ * 選択行が必要な動画履歴の作成は一括実行に含めません。
+ */
+function runAllLogAnalytics() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  // 入力不足で一部だけ更新されることを避けるため、先に確認します。
+  ['record', 'Status'].forEach(function(name) {
+    const sheet = ss.getSheetByName(name);
+    if (!sheet || sheet.getLastRow() < 2) {
+      throw new Error(name + ' シートにデータが必要です。');
+    }
+  });
+
+  // 各処理が個別にロックを取得するため、ここでは二重に取得しません。
+  dedupeStatusSheet();
+  compressRecordAndUpdateSummary();
+  buildMonthlySummaryFromStatus();
+  buildTypeAnalyticsFromSummary();
+  buildGrowthProfileFromSummary();
+  buildWeeklyChannelOverview();
+  createWeeklyViewReport();
 }
 
 /**
